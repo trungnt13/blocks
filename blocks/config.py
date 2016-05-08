@@ -71,11 +71,15 @@ The following configurations are supported:
    https://en.wikipedia.org/wiki/Environment_variable
 
 """
+from __future__ import absolute_import
 import logging
 import os
 
 import six
 import yaml
+
+from blocks import autoconfig
+SEED = autoconfig.seed
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +178,7 @@ def str_or_none(val):
 
 # Define configuration options
 config = Configuration()
-config.add_config('default_seed', type_=int, default=1)
+config.add_config('default_seed', type_=int, default=SEED)
 config.add_config('recursion_limit', type_=int, default=10000)
 config.add_config('profile', type_=bool_, default=False,
                   env_var='BLOCKS_PROFILE')

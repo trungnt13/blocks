@@ -1,7 +1,14 @@
 from __future__ import print_function
+import os
 import sys
+import time
 import contextlib
 from collections import OrderedDict, deque
+
+import shutil
+from six.moves.urllib.request import urlopen
+from six.moves.urllib.error import URLError, HTTPError
+import tarfile
 
 import numpy
 import six
@@ -578,3 +585,383 @@ def find_bricks(top_bricks, predicate):
                 found.append(current)
             to_visit.extend(current.children)
     return found
+
+
+# ===========================================================================
+# Python
+# ===========================================================================
+class queue(object):
+
+    """ FIFO, fast, NO thread-safe queue
+    put : append to end of list
+    append : append to end of list
+    pop : remove data from end of list
+    get : remove data from end of list
+    empty : check if queue is empty
+    clear : remove all data in queue
+    """
+
+    def __init__(self):
+        super(queue, self).__init__()
+        self._data = []
+        self._idx = 0
+
+    def put(self, value):
+        self._data.append(value)
+
+    def append(self, value):
+        self._data.append(value)
+
+    def pop(self):
+        if self._idx == len(self._data):
+            raise ValueError('Queue is empty')
+        self._idx += 1
+        return self._data[self._idx - 1]
+
+    def get(self):
+        if self._idx == len(self._data):
+            raise ValueError('Queue is empty')
+        self._idx += 1
+        return self._data[self._idx - 1]
+
+    def empty(self):
+        if self._idx == len(self._data):
+            return True
+        return False
+
+    def clear(self):
+        del self._data
+        self._data = []
+        self._idx = 0
+
+    def __len__(self):
+        return len(self._data) - self._idx
+
+
+class Progbar(object):
+
+    '''
+    This function is adpated from: https://github.com/fchollet/keras
+    Original work Copyright (c) 2014-2015 keras contributors
+    Modified work Copyright 2016-2017 TrungNT
+    '''
+
+    def __init__(self, target, title=''):
+        '''
+            @param target: total number of steps expected
+        '''
+        self.width = 39
+        self.target = target
+        self.sum_values = {}
+        self.unique_values = []
+        self.start = time.time()
+        self.total_width = 0
+        self.seen_so_far = 0
+        self.title = title
+
+    def update(self, current, values=[]):
+        '''
+            @param current: index of current step
+            @param values: list of tuples (name, value_for_last_step).
+            The progress bar will display averages for these values.
+        '''
+        for k, v in values:
+            if k not in self.sum_values:
+                self.sum_values[k] = [v * (current - self.seen_so_far), current - self.seen_so_far]
+                self.unique_values.append(k)
+            else:
+                self.sum_values[k][0] += v * (current - self.seen_so_far)
+                self.sum_values[k][1] += (current - self.seen_so_far)
+        self.seen_so_far = current
+
+        now = time.time()
+
+        prev_total_width = self.total_width
+        sys.stdout.write("\b" * prev_total_width)
+        sys.stdout.write("\r")
+
+        numdigits = int(numpy.floor(numpy.log10(self.target))) + 1
+        barstr = '%s %%%dd/%%%dd [' % (self.title, numdigits, numdigits)
+        bar = barstr % (current, self.target)
+        prog = float(current) / self.target
+        prog_width = int(self.width * prog)
+        if prog_width > 0:
+            bar += ('=' * (prog_width - 1))
+            if current < self.target:
+                bar += '>'
+            else:
+                bar += '='
+        bar += ('.' * (self.width - prog_width))
+        bar += ']'
+        sys.stdout.write(bar)
+        self.total_width = len(bar)
+
+        if current:
+            time_per_unit = (now - self.start) / current
+        else:
+            time_per_unit = 0
+        eta = time_per_unit * (self.target - current)
+        info = ''
+        if current < self.target:
+            info += ' - ETA: %ds' % eta
+        else:
+            info += ' - %ds' % (now - self.start)
+        for k in self.unique_values:
+            info += ' - %s:' % k
+            if type(self.sum_values[k]) is list:
+                avg = self.sum_values[k][0] / max(1, self.sum_values[k][1])
+                if abs(avg) > 1e-3:
+                    info += ' %.4f' % avg
+                else:
+                    info += ' %.4e' % avg
+            else:
+                info += ' %s' % self.sum_values[k]
+
+        self.total_width += len(info)
+        if prev_total_width > self.total_width:
+            info += ((prev_total_width - self.total_width) * " ")
+
+        sys.stdout.write(info)
+        sys.stdout.flush()
+
+        if current >= self.target:
+            sys.stdout.write("\n")
+
+    def add(self, n, values=[]):
+        self.update(self.seen_so_far + n, values)
+
+
+# Under Python 2, 'urlretrieve' relies on FancyURLopener from legacy
+# urllib module, known to have issues with proxy management
+if sys.version_info[0] == 2:
+    def urlretrieve(url, filename, reporthook=None, data=None):
+        '''
+        This function is adpated from: https://github.com/fchollet/keras
+        Original work Copyright (c) 2014-2015 keras contributors
+        '''
+        def chunk_read(response, chunk_size=8192, reporthook=None):
+            total_size = response.info().get('Content-Length').strip()
+            total_size = int(total_size)
+            count = 0
+            while 1:
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+                count += 1
+                if reporthook:
+                    reporthook(count, chunk_size, total_size)
+                yield chunk
+
+        response = urlopen(url, data)
+        with open(filename, 'wb') as fd:
+            for chunk in chunk_read(response, reporthook=reporthook):
+                fd.write(chunk)
+else:
+    from six.moves.urllib.request import urlretrieve
+
+
+def get_file(fname, origin, untar=False):
+    '''
+    This function is adpated from: https://github.com/fchollet/keras
+    Original work Copyright (c) 2014-2015 keras contributors
+    Modified work Copyright 2016-2017 TrungNT
+    '''
+    datadir_base = os.path.expanduser(os.path.join('~', '.blocks'))
+    if not os.access(datadir_base, os.W_OK):
+        datadir_base = os.path.join('/tmp', '.blocks')
+    datadir = os.path.join(datadir_base, 'datasets')
+    if not os.path.exists(datadir):
+        os.makedirs(datadir)
+
+    if untar:
+        untar_fpath = os.path.join(datadir, fname)
+        fpath = untar_fpath + '.tar.gz'
+    else:
+        fpath = os.path.join(datadir, fname)
+
+    if not os.path.exists(fpath):
+        print('Downloading data from', origin)
+        global progbar
+        progbar = None
+
+        def dl_progress(count, block_size, total_size):
+            global progbar
+            if progbar is None:
+                progbar = Progbar(total_size)
+            else:
+                progbar.update(count * block_size)
+
+        error_msg = 'URL fetch failure on {}: {} -- {}'
+        try:
+            try:
+                urlretrieve(origin, fpath, dl_progress)
+            except URLError as e:
+                raise Exception(error_msg.format(origin, e.errno, e.reason))
+            except HTTPError as e:
+                raise Exception(error_msg.format(origin, e.code, e.msg))
+        except (Exception, KeyboardInterrupt) as e:
+            if os.path.exists(fpath):
+                os.remove(fpath)
+            raise
+        progbar = None
+
+    if untar:
+        if not os.path.exists(untar_fpath):
+            print('Untaring file...')
+            tfile = tarfile.open(fpath, 'r:gz')
+            try:
+                tfile.extractall(path=datadir)
+            except (Exception, KeyboardInterrupt) as e:
+                if os.path.exists(untar_fpath):
+                    if os.path.isfile(untar_fpath):
+                        os.remove(untar_fpath)
+                    else:
+                        shutil.rmtree(untar_fpath)
+                raise
+            tfile.close()
+        return untar_fpath
+
+    return fpath
+
+
+def get_all_files(path, filter_func=None):
+    ''' Recurrsively get all files in the given path '''
+    file_list = []
+    q = queue()
+    # init queue
+    if os.access(path, os.R_OK):
+        for p in os.listdir(path):
+            q.put(os.path.join(path, p))
+    # process
+    while not q.empty():
+        p = q.pop()
+        if os.path.isdir(p):
+            if os.access(p, os.R_OK):
+                for i in os.listdir(p):
+                    q.put(os.path.join(p, i))
+        else:
+            if filter_func is not None and not filter_func(p):
+                continue
+            # remove dump files of Mac
+            if '.DS_STORE' in p or '._' == os.path.basename(p)[:2]:
+                continue
+            file_list.append(p)
+    return file_list
+
+
+def get_module_from_path(identifier, prefix='', suffix='', path='.', exclude='',
+                  prefer_compiled=False):
+    ''' Algorithms:
+     - Search all files in the `path` matched `prefix` and `suffix`
+     - Exclude all files contain any str in `exclude`
+     - Sorted all files based on alphabet
+     - Load all modules based on `prefer_compiled`
+     - return list of identifier found in all modules
+
+    Parameters
+    ----------
+    identifier : str
+        identifier of object, function or anything in script files
+    prefix : str
+        prefix of file to search in the `path`
+    suffix : str
+        suffix of file to search in the `path`
+    path : str
+        searching path of script files
+    exclude : str, list(str)
+        any files contain str in this list will be excluded
+    prefer_compiled : bool
+        True mean prefer .pyc file, otherwise prefer .py
+
+    Returns
+    -------
+    list(object, function, ..) :
+        any thing match given identifier in all found script file
+
+    Notes
+    -----
+    File with multiple . character my procedure wrong results
+    If the script run this this function match the searching process, a
+    infinite loop may happen!
+    '''
+    import re
+    import imp
+    from inspect import getmembers
+    # ====== validate input ====== #
+    if exclude == '': exclude = []
+    if type(exclude) not in (list, tuple, numpy.ndarray):
+        exclude = [exclude]
+    prefer_flag = -1
+    if prefer_compiled: prefer_flag = 1
+    # ====== create pattern and load files ====== #
+    pattern = re.compile('^%s.*%s\.pyc?' % (prefix, suffix)) # py or pyc
+    files = os.listdir(path)
+    files = [f for f in files
+             if pattern.match(f) and
+             sum([i in f for i in exclude]) == 0]
+    # ====== remove duplicated pyc files ====== #
+    files = sorted(files, key=lambda x: prefer_flag * len(x)) # pyc is longer
+    # .pyc go first get overrided by .py
+    files = sorted({f.split('.')[0]: f for f in files}.values())
+    # ====== load all modules ====== #
+    modules = []
+    for f in files:
+        try:
+            if '.pyc' in f:
+                modules.append(
+                    imp.load_compiled(f.split('.')[0],
+                                      os.path.join(path, f))
+                )
+            else:
+                modules.append(
+                    imp.load_source(f.split('.')[0],
+                                    os.path.join(path, f))
+                )
+        except:
+            pass
+    # ====== Find all identifier in modules ====== #
+    ids = []
+    for m in modules:
+        for i in getmembers(m):
+            if identifier in i:
+                ids.append(i[1])
+    # remove duplicate py
+    return ids
+
+
+# ===========================================================================
+# Misc
+# ===========================================================================
+def save_wav(path, s, fs):
+    from scipy.io import wavfile
+    wavfile.write(path, fs, s)
+
+
+def play_audio(data, fs, volumn=1, speed=1):
+    ''' Play audio from numpy array.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+            signal data
+    fs : int
+            sample rate
+    volumn: float
+            between 0 and 1
+    speed: float
+            > 1 mean faster, < 1 mean slower
+    '''
+    import soundfile as sf
+    import os
+
+    data = numpy.asarray(data)
+    if data.ndim == 1:
+        channels = 1
+    else:
+        channels = data.shape[1]
+    with sf.SoundFile('/tmp/tmp_play.wav', 'w', fs, channels,
+                   subtype=None, endian=None, format=None, closefd=None) as f:
+        f.write(data)
+    os.system('afplay -v %f -q 1 -r %f /tmp/tmp_play.wav &' % (volumn, speed))
+    raw_input('<enter> to stop audio.')
+    os.system("kill -9 `ps aux | grep -v 'grep' | grep afplay | awk '{print $2}'`")

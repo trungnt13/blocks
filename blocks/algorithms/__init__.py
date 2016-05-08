@@ -215,7 +215,7 @@ class GradientDescent(DifferentiableCostMinimizer):
     """
     def __init__(self, step_rule=None, gradients=None, known_grads=None,
                  consider_constant=None, on_unused_sources='raise',
-                 theano_func_kwargs=None, **kwargs):
+                 allow_input_downcast=True, theano_func_kwargs=None, **kwargs):
         if gradients:
             kwargs.setdefault("parameters", gradients.keys())
         super(GradientDescent, self).__init__(**kwargs)
@@ -245,6 +245,7 @@ class GradientDescent(DifferentiableCostMinimizer):
         self.total_step_norm = l2_norm(
             self.steps.values()).copy(name="total_step_norm")
         self.on_unused_sources = on_unused_sources
+        self.allow_input_downcast = allow_input_downcast
         self.theano_func_kwargs = (theano_func_kwargs if theano_func_kwargs
                                    is not None else dict())
 
@@ -258,7 +259,9 @@ class GradientDescent(DifferentiableCostMinimizer):
             all_updates.append((parameter, parameter - self.steps[parameter]))
         all_updates += self.step_rule_updates
         self._function = theano.function(
-            self.inputs, [], updates=all_updates, **self.theano_func_kwargs)
+            self.inputs, [], updates=all_updates,
+            allow_input_downcast=self.allow_input_downcast,
+            **self.theano_func_kwargs)
         logger.info("The training algorithm is initialized")
 
     def _validate_source_names(self, batch):
@@ -726,7 +729,7 @@ class AdaGrad(StepRule):
     """Implements the AdaGrad learning rule.
 
     Parameters
-    ----------
+i    ----------
     learning_rate : float, optional
         Step size.
         Default value is set to 0.0002.

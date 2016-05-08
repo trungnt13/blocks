@@ -1,7 +1,9 @@
 """Some of the simplest individual bricks."""
+from __future__ import absolute_import
 import logging
 
 from theano import tensor
+from blocks import backend as K
 
 from blocks.bricks.base import application, Brick, lazy
 from blocks.bricks.interfaces import Activation, Feedforward, Initializable

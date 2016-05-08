@@ -1,3 +1,4 @@
+from __future__ import absolute_import
 from abc import ABCMeta, abstractmethod
 
 import theano
@@ -5,6 +6,7 @@ from theano import tensor
 from six import add_metaclass
 
 from blocks.bricks.base import application, Brick
+from blocks import backend as K
 
 
 @add_metaclass(ABCMeta)
@@ -56,7 +58,7 @@ class SquaredError(CostMatrix):
 class CategoricalCrossEntropy(Cost):
     @application(outputs=["cost"])
     def apply(self, y, y_hat):
-        cost = tensor.nnet.categorical_crossentropy(y_hat, y).mean()
+        cost = K.categorical_crossentropy(y_hat, y, from_logits=False).mean()
         return cost
 
 
