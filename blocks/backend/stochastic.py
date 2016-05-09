@@ -4,14 +4,13 @@ from theano import tensor as T
 from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
 import numpy as np
 
+from blocks import RNG_GENERATOR
 from blocks import autoconfig
-from blocks.utils import np_utils
 
 FLOATX = autoconfig.floatX
 EPSILON = autoconfig.epsilon
 PI = np.pi
 C = -0.5 * np.log(2 * PI)
-RNG_GENERATOR = np_utils.RNG_GENERATOR
 
 
 # ===========================================================================

@@ -590,6 +590,12 @@ def find_bricks(top_bricks, predicate):
 # ===========================================================================
 # Python
 # ===========================================================================
+class struct(object):
+
+    '''Flexible object can be assigned any attribtues'''
+    pass
+
+
 class queue(object):
 
     """ FIFO, fast, NO thread-safe queue
@@ -927,6 +933,18 @@ def get_module_from_path(identifier, prefix='', suffix='', path='.', exclude='',
                 ids.append(i[1])
     # remove duplicate py
     return ids
+
+
+def is_path(path):
+    if isinstance(path, str):
+        path = os.path.abspath(path)
+        if os.path.exists(path):
+            #the file is there
+            return True
+        elif os.access(os.path.dirname(path), os.W_OK):
+            #the file does not exists but write privileges are given
+            return True
+    return False
 
 
 # ===========================================================================

@@ -2,8 +2,9 @@
 # ===========================================================================
 # Copyright 2016-2017 TrungNT
 # ===========================================================================
-from __future__ import print_function, division
+from __future__ import print_function, division, absolute_import
 
+import os
 import sys
 from collections import OrderedDict, defaultdict
 from functools import wraps, partial
@@ -12,13 +13,16 @@ from six.moves import zip, zip_longest
 import types
 import cPickle
 
+from blocks.utils import is_path
+
 __all__ = [
     'cache',
     'typecheck',
     'autoattr',
     'autoinit',
     'abstractstatic',
-    'functionable'
+    'functionable',
+    'singleton'
 ]
 
 # ===========================================================================
@@ -566,6 +570,54 @@ class functionable(object):
         if self._function is None:
             raise AttributeError('Cannot find function with name={} in sandbox'
                                  ''.format(self._function_name))
+
+
+# ===========================================================================
+# Singleton metaclass
+# ===========================================================================
+def singleton(cls):
+    ''' Singleton for class instance, all __init__ with same arguments return
+    same instance
+    '''
+    if not isinstance(cls, type):
+        raise Exception('singleton decorator only accept class without any '
+                        'addition parameter to the decorator.')
+
+    orig_vars = cls.__dict__.copy()
+    slots = orig_vars.get('__slots__')
+    if slots is not None:
+        if isinstance(slots, str):
+            slots = [slots]
+        for slots_var in slots:
+            orig_vars.pop(slots_var)
+    orig_vars.pop('__dict__', None)
+    orig_vars.pop('__weakref__', None)
+    return Singleton(cls.__name__, cls.__bases__, orig_vars)
+
+
+class Singleton(type):
+    _instances = defaultdict(list) # (arguments, instance)
+
+    def __call__(cls, *args, **kwargs):
+        spec = inspect.getargspec(cls.__init__)
+        kwspec = {}
+        if spec.defaults is not None:
+            kwspec.update(zip(reversed(spec.args), reversed(spec.defaults)))
+        kwspec.update(zip(spec.args[1:], args))
+        kwspec.update(kwargs)
+        # convert all path to abspath to make sure same path are the same
+        for i, j in kwspec.iteritems():
+            if is_path(j):
+                kwspec[i] = os.path.abspath(j)
+
+        instances = Singleton._instances[cls]
+        for arguments, instance in instances:
+            if arguments == kwspec:
+                return instance
+        # not found old instance
+        instance = super(Singleton, cls).__call__(*args, **kwargs)
+        instances.append((kwspec, instance))
+        return instance
 
 # Override the module's __call__ attribute
 # sys.modules[__name__] = cache

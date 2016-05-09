@@ -11,10 +11,9 @@ import math
 import numpy as np
 import scipy as sp
 
+from blocks import RNG_GENERATOR
 from blocks import autoconfig
 FLOAT_X = autoconfig.floatX
-SEED = autoconfig.seed
-RNG_GENERATOR = np.random.RandomState(SEED)
 
 
 # ===========================================================================

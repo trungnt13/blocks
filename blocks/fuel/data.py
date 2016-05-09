@@ -4,23 +4,29 @@
 from __future__ import print_function, division, absolute_import
 
 import os
-import numpy as np
-from abc import ABCMeta, abstractmethod
-
 import re
-from blocks.utils.decorators import autoattr, cache
-from blocks.utils import queue
+from math import ceil
+from abc import ABCMeta, abstractmethod
+from six import add_metaclass
 from six.moves import range, zip, zip_longest
+
+import numpy as np
+
+from blocks import RNG_GENERATOR
+from blocks.utils.decorators import autoattr, cache
+from blocks.utils import queue, struct
 
 
 __all__ = [
     'open_hdf5',
     'close_all_hdf5',
     'resize_memmap',
+    'get_all_hdf_dataset',
+
     'Data',
     'MmapData',
-    'get_all_hdf_dataset',
     'Hdf5Data',
+    'DataIterator',
     'DataMerge'
 ]
 
@@ -49,6 +55,47 @@ def resize_memmap(memmap, shape):
     return memmap
 
 
+def _estimate_shape(shape, func):
+    ''' This method cannot estimate the shape accurately if you use slice '''
+    shape0 = (12 + 8) // 10 * 13
+    # func on 1 array
+    if not isinstance(shape[0], (list, tuple)):
+        if len(shape) > 0:
+            n = int(min(shape0, shape[0])) # lucky number :D
+            tmp = np.empty((n,) + shape[1:])
+        else:
+            tmp = np.empty(shape)
+        old_shape = tmp.shape
+        new_shape = func(tmp).shape
+    else: # func on multiple-array
+        tmp = []
+        for s in shape:
+            if len(s) > 0:
+                n = int(min(shape0, s[0])) # lucky number :D
+                tmp.append(np.empty((n,) + s[1:]))
+            else:
+                tmp.append(np.empty(s))
+        old_shape = tmp[0].shape
+        new_shape = func(tmp).shape
+        shape = shape[0] # list of shape to a shape
+
+    # ====== omitted the some dimensions ====== #
+    if len(new_shape) == 0:
+        return new_shape
+    elif len(new_shape) < len(old_shape):
+        if old_shape[0] != new_shape[0]: # first dimension omitted
+            old_shape = old_shape[1:]
+            shape = shape[1:]
+        else: # other dimension omitted (no problem because we already know all of them)
+            pass
+
+    zip_func = zip if len(new_shape) <= len(old_shape) else zip_longest
+    new_shape_ratio = [i / j if j is not None else i
+                       for i, j in zip_func(new_shape, old_shape)]
+    return tuple([int(round(i * j)) if i is not None else j
+                  for i, j in zip_func(shape, new_shape_ratio)])
+
+
 def _get_chunk_size(shape, size):
     if isinstance(size, int):
         return (2**int(np.ceil(np.log2(size))),) + shape[1:]
@@ -57,78 +104,121 @@ def _get_chunk_size(shape, size):
     return True
 
 
+def _validate_operate_axis(axis):
+    ''' as we iterate over first dimension, it is prerequisite to
+    have 0 in the axis of operator
+    '''
+    if not isinstance(axis, (tuple, list)):
+        axis = [axis]
+    axis = tuple(int(i) for i in axis)
+    if 0 not in axis:
+        raise ValueError('Expect 0 in the operating axis because we always'
+                         ' iterate data over the first dimension.')
+    return axis
+
+
+# x can be percantage or number of samples
+_apply_approx = lambda n, x: int(round(n * x)) if x < 1. + 1e-12 else int(x)
+
+
 # ===========================================================================
 # Data
 # ===========================================================================
+@add_metaclass(ABCMeta)
 class Data(object):
-    __metaclass__ = ABCMeta
-
-    """docstring for Data"""
 
     def __init__(self):
         # batch information
         self._batch_size = 256
         self._start = 0.
         self._end = 1.
-        self._rng = np.random.RandomState()
         self._seed = None
         self._status = 0 # flag show that array valued changed
         # main data object that have shape, dtype ...
         self._data = None
 
-        self._transformer = []
+        self._transformer = lambda x: x
 
     # ====== transformer ====== #
-    def _check_transformer_type(self, transformer):
-        if not hasattr(transformer, '__call__'):
-            raise ValueError('Transformer must be callable, which accept at least'
-                             ' one input argument.')
-
     def transform(self, transformer):
-        if transformer is None:
-            self._transformer = []
-        elif isinstance(transformer, (tuple, list)):
-            [self._check_transformer_type(i) for i in transformer]
+        if hasattr(transformer, '__call__'):
             self._transformer = transformer
-        else:
-            self._check_transformer_type(transformer)
-            self._transformer.append(transformer)
         return self
+
+    # ==================== internal utilities ==================== #
+    ''' BigData instance store large dataset that need to be iterate over to
+    perform any operators.
+    '''
+    @cache('_status')
+    def _iterating_operator(self, ops, axis, merge_func=sum, init_val=0.):
+        '''Execute a list of ops on X given the axis or axes'''
+        if axis is not None:
+            axis = _validate_operate_axis(axis)
+        if not isinstance(ops, (tuple, list)):
+            ops = [ops]
+
+        # init values all zeros
+        s = None
+        old_seed = self._seed
+        old_start = self._start
+        old_end = self._end
+        self.set_batch(start=0., end=1., seed=None)
+        # less than million data points, not a big deal
+        for X in iter(self):
+            if s is None:
+                s = [o(X, axis) for o in ops]
+            else:
+                s = [merge_func((i, o(X, axis))) for i, o in zip(s, ops)]
+        self.set_batch(start=old_start, end=old_end, seed=old_seed)
+        return s
+
+    def _iterate_update(self, y, ops):
+        shape = self._data.shape
+        # custom batch_size
+        idx = list(range(0, shape[0], 1024))
+        if idx[-1] < shape[0]:
+            idx.append(shape[0])
+        idx = list(zip(idx, idx[1:]))
+        Y = lambda start, end: (y[start:end] if hasattr(y, 'shape') and
+                                y.shape[0] == shape[0]
+                                else y)
+        for i in idx:
+            start, end = i
+            if 'add' == ops:
+                self._data[start:end] += Y
+            elif 'mul' == ops:
+                self._data[start:end] *= Y
+            elif 'div' == ops:
+                self._data[start:end] /= Y
+            elif 'sub' == ops:
+                self._data[start:end] -= Y
+            elif 'floordiv' == ops:
+                self._data[start:end] //= Y
+            elif 'pow' == ops:
+                self._data[start:end] **= Y
 
     # ==================== properties ==================== #
     @property
     def shape(self):
-        if len(self._transformer) == 0:
-            return self._data.shape
         # auto infer new shape
-        n = (12 + 8) // 10 # lucky number :D
-        if self._data.shape[0] > n:
-            tmp = self._data[:n]
-        else:
-            tmp = np.ones((n,) + self._data.shape[1:])
-        old_shape = tmp.shape
-        for f in self._transformer:
-            tmp = f(tmp)
-        zip_func = zip if len(tmp.shape) <= len(old_shape) else zip_longest
-        new_shape_ratio = [i / j if j is not None else i
-                           for i, j in zip_func(tmp.shape, old_shape)]
-        return tuple([int(round(i * j)) if i is not None else j
-                      for i, j in zip_func(self._data.shape, new_shape_ratio)])
+        return _estimate_shape(self._data.shape, self._transformer)
 
     @property
     def T(self):
-        return self._data[:].T
+        return self.array.T
 
     @property
     def dtype(self):
+        if not hasattr(self._data, 'dtype'):
+            return self._data[0].dtype
         return self._data.dtype
 
     @property
     def array(self):
-        return self._data[:]
+        return self._transformer(self._data[:])
 
     def tolist(self):
-        return self._data[:].tolist()
+        return self.array.tolist()
 
     @property
     def batch_size(self):
@@ -150,10 +240,7 @@ class Data(object):
 
     # ==================== Slicing methods ==================== #
     def __getitem__(self, y):
-        x = self._data.__getitem__(y)
-        for f in self._transformer:
-            x = f(x)
-        return x
+        return self._transformer(self._data.__getitem__(y))
 
     @autoattr(_status=lambda x: x + 1)
     def __setitem__(self, x, y):
@@ -163,14 +250,11 @@ class Data(object):
     def __iter__(self):
         batch_size = self._batch_size
         seed = self._seed
-        rng = self._rng
         shape = self._data.shape
 
         # custom batch_size
-        start = (int(self._start * shape[0]) if self._start < 1. + 1e-12
-                 else int(self._start))
-        end = (int(self._end * shape[0]) if self._end < 1. + 1e-12
-               else int(self._end))
+        start = _apply_approx(shape[0], self._start)
+        end = _apply_approx(shape[0], self._end)
         if start > shape[0] or end > shape[0]:
             raise ValueError('start={} or end={} excess data_size={}'
                              ''.format(start, end, shape[0]))
@@ -180,16 +264,13 @@ class Data(object):
             idx.append(end)
         idx = list(zip(idx, idx[1:]))
         if seed is not None:
-            rng.seed(seed)
-            rng.shuffle(idx)
+            np.random.seed(seed)
+            np.random.shuffle(idx)
             self._seed = None
 
         for i in idx:
             start, end = i
-            x = self._data[start:end]
-            for f in self._transformer:
-                x = f(x)
-            yield x
+            yield self._transformer(self._data[start:end])
 
     # ==================== Strings ==================== #
     def __len__(self):
@@ -297,6 +378,124 @@ class Data(object):
     def normalize(self, axis, mean=None, std=None):
         raise NotImplementedError
 
+
+class MutableData(Data):
+
+    ''' Can only read, NO write or modify the values '''
+
+    def __setitem__(self, x, y):
+        raise NotImplementedError
+
+    # ==================== manipulation ==================== #
+    def append(self, *arrays):
+        raise NotImplementedError
+
+    def prepend(self, *arrays):
+        raise NotImplementedError
+
+    # ==================== abstract ==================== #
+    def resize(self, shape):
+        raise NotImplementedError
+
+    def flush(self):
+        pass
+
+    # ==================== high-level operators ==================== #
+    def sum(self, axis=0):
+        ops = lambda x, axis: np.sum(x, axis=axis)
+        return self._iterating_operator(ops, axis)[0]
+
+    def cumsum(self, axis=None):
+        return self.array.cumsum(axis)
+
+    def sum2(self, axis=0):
+        ops = lambda x, axis: np.sum(np.power(x, 2), axis=axis)
+        return self._iterating_operator(ops, axis)[0]
+
+    def pow(self, y):
+        return self.array.__pow__(y)
+
+    def min(self, axis=None):
+        ops = lambda x, axis: np.min(x, axis=axis)
+        return self._iterating_operator(ops, axis,
+            merge_func=lambda x: np.where(x[0] < x[1], x[0], x[1]),
+            init_val=float('inf'))[0]
+
+    def argmin(self, axis=None):
+        return self.array.argmin(axis)
+
+    def max(self, axis=None):
+        ops = lambda x, axis: np.max(x, axis=axis)
+        return self._iterating_operator(ops, axis,
+            merge_func=lambda x: np.where(x[0] > x[1], x[0], x[1]),
+            init_val=float('-inf'))[0]
+
+    def argmax(self, axis=None):
+        return self.array.argmax(axis)
+
+    def mean(self, axis=0):
+        sum1 = self.sum(axis)
+
+        axis = _validate_operate_axis(axis)
+        n = np.prod([self.shape[i] for i in axis])
+        return sum1 / n
+
+    def var(self, axis=0):
+        sum1 = self.sum(axis)
+        sum2 = self.sum2(axis)
+
+        axis = _validate_operate_axis(axis)
+        n = np.prod([self.shape[i] for i in axis])
+        return (sum2 - np.power(sum1, 2) / n) / n
+
+    def std(self, axis=0):
+        return np.sqrt(self.var(axis))
+
+    def normalize(self, axis, mean=None, std=None):
+        raise NotImplementedError
+
+    # ==================== low-level operator ==================== #
+    def __add__(self, y):
+        return self.array.__add__(y)
+
+    def __sub__(self, y):
+        return self.array.__sub__(y)
+
+    def __mul__(self, y):
+        return self.array.__mul__(y)
+
+    def __div__(self, y):
+        return self.array.__div__(y)
+
+    def __floordiv__(self, y):
+        return self.array.__floordiv__(y)
+
+    def __pow__(self, y):
+        return self.array.__pow__(y)
+
+    def __neg__(self):
+        return self.array.__neg__()
+
+    def __pos__(self):
+        return self.array.__pos__()
+
+    def __iadd__(self, y):
+        raise NotImplementedError
+
+    def __isub__(self, y):
+        raise NotImplementedError
+
+    def __imul__(self, y):
+        raise NotImplementedError
+
+    def __idiv__(self, y):
+        raise NotImplementedError
+
+    def __ifloordiv__(self, y):
+        raise NotImplementedError
+
+    def __ipow__(self, y):
+        raise NotImplementedError
 
 # ===========================================================================
 # Memmap Data object
@@ -667,19 +866,6 @@ def get_all_hdf_dataset(hdf, fileter_func=None, path='/'):
     return res
 
 
-def _validate_operate_axis(axis):
-    ''' as we iterate over first dimension, it is prerequisite to
-    have 0 in the axis of operator
-    '''
-    if not isinstance(axis, (tuple, list)):
-        axis = [axis]
-    axis = tuple(int(i) for i in axis)
-    if 0 not in axis:
-        raise ValueError('Expect 0 in the operating axis because we always'
-                         ' iterate data over the first dimension.')
-    return axis
-
-
 _HDF5 = {}
 
 
@@ -783,24 +969,6 @@ class Hdf5Data(Data):
 
     # ==================== High-level operator ==================== #
     @cache('_status')
-    def _iterating_operator(self, ops, axis, merge_func=sum, init_val=0.):
-        '''Execute a list of ops on X given the axis or axes'''
-        if axis is not None:
-            axis = _validate_operate_axis(axis)
-        if not isinstance(ops, (tuple, list)):
-            ops = [ops]
-
-        # init values all zeros
-        s = None
-        # less than million data points, not a big deal
-        for X in iter(self):
-            if s is None:
-                s = [o(X, axis) for o in ops]
-            else:
-                s = [merge_func((i, o(X, axis))) for i, o in zip(s, ops)]
-        return s
-
-    @cache('_status')
     def sum(self, axis=0):
         ops = lambda x, axis: np.sum(x, axis=axis)
         return self._iterating_operator(ops, axis)[0]
@@ -868,30 +1036,6 @@ class Hdf5Data(Data):
         self._iterate_update(mean, 'sub')
         self._iterate_update(std, 'div')
         return self
-
-    # ==================== Special operators ==================== #
-    def _iterate_update(self, y, ops):
-        shape = self._data.shape
-        # custom batch_size
-        idx = list(range(0, shape[0], 1024))
-        if idx[-1] < shape[0]:
-            idx.append(shape[0])
-        idx = list(zip(idx, idx[1:]))
-
-        for i in idx:
-            start, end = i
-            if 'add' == ops:
-                self._data[start:end] += y
-            elif 'mul' == ops:
-                self._data[start:end] *= y
-            elif 'div' == ops:
-                self._data[start:end] /= y
-            elif 'sub' == ops:
-                self._data[start:end] -= y
-            elif 'floordiv' == ops:
-                self._data[start:end] //= y
-            elif 'pow' == ops:
-                self._data[start:end] **= y
 
     # ==================== low-level operator ==================== #
     def __add__(self, y):
@@ -978,11 +1122,261 @@ class Hdf5Data(Data):
 
 
 # ===========================================================================
+# data iterator
+# ===========================================================================
+def _approximate_continuos_by_discrete(distribution):
+    '''original distribution: [ 0.47619048  0.38095238  0.14285714]
+       best approximated: [ 5.  4.  2.]
+    '''
+    if len(distribution) == 1:
+        return distribution
+
+    inv_distribution = 1 - distribution
+    x = np.round(1 / inv_distribution)
+    x = np.where(distribution == 0, 0, x)
+    return x.astype(int)
+
+
+class DataIterator(MutableData):
+
+    ''' Vertically merge several data object for iteration
+    '''
+
+    def __init__(self, data):
+        super(DataIterator, self).__init__()
+        if not isinstance(data, (tuple, list)):
+            data = (data,)
+        # ====== validate args ====== #
+        if any(not isinstance(i, Data) for i in data):
+            raise ValueError('data must be instance of MmapData or Hdf5Data, '
+                             'but given data have types: {}'
+                             ''.format(map(lambda x: str(type(x)).split("'")[1],
+                                          data)))
+        shape = data[0].shape[1:]
+        if any(i.shape[1:] != shape for i in data):
+            raise ValueError('all data must have the same trial dimension, but'
+                             'given shape of all data as following: {}'
+                             ''.format([i.shape for i in data]))
+        # ====== defaults parameters ====== #
+        self._data = data
+        self._batch_size = 256
+
+        self._start = 0.
+        self._end = 1.
+
+        self._sequential = False
+        self._distribution = [1.] * len(data)
+        self._seed = None
+
+    # ==================== properties ==================== #
+    @property
+    def shape(self):
+        orig_shape = (len(self),) + self._data[0].shape[1:]
+        return _estimate_shape(orig_shape, self._transformer)
+
+    @property
+    def array(self):
+        start = self._start
+        end = self._end
+        idx = [(_apply_approx(i.shape[0], start), _apply_approx(i.shape[0], end))
+               for i in self._data]
+        idx = [(j[0], int(round(j[0] + i * (j[1] - j[0]))))
+               for i, j in zip(self._distribution, idx)]
+        return self._transformer(
+            np.vstack([i[j[0]:j[1]] for i, j in zip(self._data, idx)]))
+
+    def __len__(self):
+        start = self._start
+        end = self._end
+        return sum(round(i * (_apply_approx(j.shape[0], end) - _apply_approx(j.shape[0], start)))
+                   for i, j in zip(self._distribution, self._data))
+
+    @property
+    def distribution(self):
+        return self._distribution
+
+    def __str__(self):
+        s = ['====== Iterator: ======']
+        # ====== Find longest string ====== #
+        longest_name = 0
+        longest_shape = 0
+        for d in self._data:
+            name = d.name
+            dtype = d.dtype
+            shape = d.shape
+            longest_name = max(len(name), longest_name)
+            longest_shape = max(len(str(shape)), longest_shape)
+        # ====== return print string ====== #
+        format_str = ('Name:%-' + str(longest_name) + 's  '
+                      'dtype:%-7s  '
+                      'shape:%-' + str(longest_shape) + 's  ')
+        for d in self._data:
+            name = d.name
+            dtype = d.dtype
+            shape = d.shape
+            s.append(format_str % (name, dtype, shape))
+        # ====== batch configuration ====== #
+        s.append('Batch: %d' % self._batch_size)
+        s.append('Sequential: %r' % self._sequential)
+        s.append('Distibution: %s' % str(self._distribution))
+        s.append('Seed: %s' % str(self._seed))
+        s.append('Range: [%.2f, %.2f]' % (self._start, self._end))
+        return '\n'.join(s)
+
+    def __repr__(self):
+        return self.__str__()
+
+    # ==================== batch configuration ==================== #
+    def set_mode(self, distribution=None, sequential=None):
+        '''
+        Parameters
+        ----------
+        distribution : str, list or float
+            'up', 'over': over-sampling all Data
+            'down', 'under': under-sampling all Data
+            list: percentage of each Data in the iterator will be iterated
+            float: the same percentage for all Data
+        sequential : bool
+            if True, read each Data one-by-one, otherwise, mix all Data
+
+        '''
+        if sequential is not None:
+            self._sequential = sequential
+        if distribution is not None:
+            # upsampling or downsampling
+            if isinstance(distribution, str):
+                distribution = distribution.lower()
+                if 'up' in distribution or 'over' in distribution:
+                    n = max(i.shape[0] for i in self._data)
+                elif 'down' in distribution or 'under' in distribution:
+                    n = min(i.shape[0] for i in self._data)
+                else:
+                    raise ValueError("Only upsampling (keyword: up, over) "
+                                     "or undersampling (keyword: down, under) "
+                                     "are supported.")
+                self._distribution = [n / i.shape[0] for i in self._data]
+            # real values distribution
+            elif isinstance(distribution, (tuple, list)):
+                if len(distribution) != len(self._data):
+                    raise ValueError('length of given distribution must equal '
+                                     'to number of data in the iterator, but '
+                                     'len_data={} != len_distribution={}'
+                                     ''.format(len(self._data), len(self._distribution)))
+                self._distribution = distribution
+            # all the same value
+            elif isinstance(distribution, float):
+                self._distribution = [distribution] * len(self._data)
+        return self
+
+    # ==================== main logic of batch iterator ==================== #
+    def __iter__(self):
+        if self._seed is not None:
+            rng = np.random.RandomState(self._seed)
+        else: # deterministic RandomState
+            rng = struct()
+            rng.randint = lambda x: None
+            rng.permutation = lambda x: range(x)
+        self._seed = None # remove the seed for next time
+        # ====== easy access many private variables ====== #
+        sequential = self._sequential
+        start, end = self._start, self._end
+        batch_size = self._batch_size
+        data = np.asarray(self._data)
+        distribution = np.asarray(self._distribution)
+        # shuffle order of data (good for sequential mode)
+        idx = rng.permutation(len(data))
+        data = data[idx]
+        distribution = distribution[idx]
+        shape = [i.shape[0] for i in data]
+        # ====== prepare distribution information ====== #
+        # number of sample should be traversed
+        n = np.asarray([i * (_apply_approx(j, end) - _apply_approx(j, start))
+                        for i, j in zip(distribution, shape)])
+        n = np.round(n).astype(int)
+        # normalize the distribution (base on new sample n of each data)
+        distribution = n / n.sum()
+        distribution = _approximate_continuos_by_discrete(distribution)
+        # somehow heuristic, rescale distribution to get more benifit from cache
+        if distribution.sum() <= len(data):
+            distribution = distribution * 3
+        # distribution now the actual batch size of each data
+        distribution = (batch_size * distribution).astype(int)
+        assert distribution.sum() % batch_size == 0, 'wrong distribution size!'
+        # predefined (start,end) pair of each batch (e.g (0,256), (256,512))
+        idx = list(range(0, batch_size + distribution.sum(), batch_size))
+        idx = list(zip(idx, idx[1:]))
+        #####################################
+        # 1. optimized parallel code.
+        if not sequential:
+            # first iterators
+            it = [iter(dat.set_batch(bs, rng.randint(10e8), start, end))
+                  for bs, dat in zip(distribution, data)]
+            # iterator
+            while sum(n) > 0:
+                batch = []
+                for i, x in enumerate(it):
+                    if n[i] <= 0:
+                        continue
+                    try:
+                        x = x.next()[:n[i]]
+                        n[i] -= x.shape[0]
+                        batch.append(x)
+                    except StopIteration: # one iterator stopped
+                        it[i] = iter(data[i].set_batch(
+                            distribution[i], rng.randint(10e8), start, end))
+                        x = it[i].next()[:n[i]]
+                        n[i] -= x.shape[0]
+                        batch.append(x)
+                # got final batch
+                batch = np.vstack(batch)
+                # no idea why random permutation is much faster than shuffle
+                batch = batch[rng.permutation(batch.shape[0])]
+                for i, j in idx[:int(ceil(batch.shape[0] / batch_size))]:
+                    yield self._transformer(batch[i:j])
+        #####################################
+        # 2. optimized sequential code.
+        else:
+            # first iterators
+            batch_size = distribution.sum()
+            it = [iter(dat.set_batch(batch_size, rng.randint(10e8), start, end))
+                  for dat in data]
+            current_data = 0
+            # iterator
+            while sum(n) > 0:
+                if n[current_data] <= 0:
+                    current_data += 1
+                try:
+                    x = it[current_data].next()[:n[current_data]]
+                    n[current_data] -= x.shape[0]
+                except StopIteration: # one iterator stopped
+                    it[current_data] = iter(data[current_data].set_batch(
+                        batch_size, rng.randint(10e8), start, end))
+                    x = it[current_data].next()[:n[current_data]]
+                    n[current_data] -= x.shape[0]
+                # shuffle x
+                x = x[rng.permutation(x.shape[0])]
+                for i, j in idx[:int(ceil(x.shape[0] / self._batch_size))]:
+                    yield self._transformer(x[i:j])
+
+    # ==================== Slicing methods ==================== #
+    def __getitem__(self, y):
+        pass
+
+# ===========================================================================
 # DataMerge
 # ===========================================================================
-class DataMerge(Data):
+
+
+class DataMerge(MutableData):
 
     '''
+    Parameters
+    ----------
+    data : list
+        list of Data objects
+    merge_func : __call__
+        function take a list of Data as argument (i.e func([data1, data2]))
+
     Note
     ----
     First data in the list will be used as root to infer the shape after merge
@@ -1014,22 +1408,9 @@ class DataMerge(Data):
     # ==================== properties ==================== #
     @property
     def shape(self):
-        # auto infer new shape
-        n = (12 + 8) // 10 # lucky number :D
-        old_shape = (n,) + self._data[0].shape[1:]
-        tmp = self._merge_func([np.ones((n,) + i.shape[1:]) for i in self._data])
-        for f in self._transformer:
-            tmp = f(tmp)
-        # shape will depend on new shape
-        zip_func = zip if len(tmp.shape) <= len(old_shape) else zip_longest
-        new_shape_ratio = [i / j if j is not None else i
-                           for i, j in zip_func(tmp.shape, old_shape)]
-        return tuple([int(round(i * j)) if i is not None else j
-                      for i, j in zip_func(self._data[0].shape, new_shape_ratio)])
-
-    @property
-    def T(self):
-        return self._merge_func([i[:].T for i in self._data])
+        shape = [i.shape for i in self._data]
+        return _estimate_shape(shape,
+                               lambda x: self._transformer(self._merge_func(x)))
 
     @property
     def dtype(self):
@@ -1039,33 +1420,25 @@ class DataMerge(Data):
 
     @property
     def array(self):
-        return self._merge_func([i[:] for i in self._data])
-
-    def tolist(self):
-        return self._merge_func([i[:] for i in self._data]).tolist()
+        return self._transformer(self._merge_func([i[:] for i in self._data]))
 
     # ==================== Slicing methods ==================== #
     def __getitem__(self, y):
-        x = self._merge_func([i.__getitem__(y) for i in self._data])
-        for f in self._transformer:
-            x = f(x)
-        return x
-
-    def __setitem__(self, x, y):
-        raise NotImplementedError
+        n = self._data[0].shape[0]
+        data = [i.__getitem__(y) if len(i.shape) > 0 and i.shape[0] == n else i
+                for i in self._data]
+        x = self._merge_func(data)
+        return self._transformer(x)
 
     # ==================== iteration ==================== #
     def __iter__(self):
         batch_size = self._batch_size
         seed = self._seed
-        rng = self._rng
-        shape = self._data.shape
-
+        # ====== prepare root first ====== #
+        shape = self._data[0].shape
         # custom batch_size
-        start = (int(self._start * shape[0]) if self._start < 1. + 1e-12
-                 else int(self._start))
-        end = (int(self._end * shape[0]) if self._end < 1. + 1e-12
-               else int(self._end))
+        start = _apply_approx(shape[0], self._start)
+        end = _apply_approx(shape[0], self._end)
         if start > shape[0] or end > shape[0]:
             raise ValueError('start={} or end={} excess data_size={}'
                              ''.format(start, end, shape[0]))
@@ -1075,102 +1448,18 @@ class DataMerge(Data):
             idx.append(end)
         idx = list(zip(idx, idx[1:]))
         if seed is not None:
-            rng.seed(seed)
-            rng.shuffle(idx)
+            np.random.seed(seed)
+            np.random.shuffle(idx)
             self._seed = None
-
-        for i in idx:
-            start, end = i
-            x = self._data[start:end]
-            for f in self._transformer:
-                x = f(x)
-            yield x
-
-    # ==================== High-level operator ==================== #
-    def sum(self, axis=0):
-        return self._merge_func([i.sum(axis=axis) for i in self._data])
-
-    def cumsum(self, axis=None):
-        return self._merge_func([i.cumsum(axis=axis) for i in self._data])
-
-    def sum2(self, axis=0):
-        return self._merge_func([i.sum2(axis=axis) for i in self._data])
-
-    def pow(self, y):
-        return self._merge_func([i.pow(y) for i in self._data])
-
-    def min(self, axis=None):
-        return self._merge_func([i.min(axis=axis) for i in self._data])
-
-    def argmin(self, axis=None):
-        return [i.argmin(axis=axis) for i in self._data]
-
-    def max(self, axis=None):
-        return self._merge_func([i.max(axis=axis) for i in self._data])
-
-    def argmax(self, axis=None):
-        return [i.argmax(axis=axis) for i in self._data]
-
-    def mean(self, axis=0):
-        return self._merge_func([i.mean(axis=axis) for i in self._data])
-
-    def var(self, axis=0):
-        return self._merge_func([i.var(axis=axis) for i in self._data])
-
-    def std(self, axis=0):
-        return self._merge_func([i.std(axis=axis) for i in self._data])
-
-    def normalize(self, axis, mean=None, std=None):
-        raise NotImplementedError
-
-    # ==================== low-level operator ==================== #
-    def __add__(self, y):
-        return self._merge_func([i.__add__(y) for i in self._data])
-
-    def __sub__(self, y):
-        return self._merge_func([i.__sub__(y) for i in self._data])
-
-    def __mul__(self, y):
-        return self._merge_func([i.__mul__(y) for i in self._data])
-
-    def __div__(self, y):
-        return self._merge_func([i.__div__(y) for i in self._data])
-
-    def __floordiv__(self, y):
-        return self._merge_func([i.__floordiv__(y) for i in self._data])
-
-    def __pow__(self, y):
-        return self._merge_func([i.__pow__(y) for i in self._data])
-
-    def __iadd__(self, y):
-        return self._merge_func([i.__iadd__(y) for i in self._data])
-
-    def __isub__(self, y):
-        return self._merge_func([i.__sub__(y) for i in self._data])
-
-    def __imul__(self, y):
-        return self._merge_func([i.__imul__(y) for i in self._data])
-
-    def __idiv__(self, y):
-        return self._merge_func([i.__idiv__(y) for i in self._data])
-
-    def __ifloordiv__(self, y):
-        return self._merge_func([i.__ifloordiv__(y) for i in self._data])
-
-    def __ipow__(self, y):
-        return self._merge_func([i.__ipow__(y) for i in self._data])
-
-    def __neg__(self):
-        [i.__neg__() for i in self._data]
-        return self
-
-    def __pos__(self):
-        [i.__pos__() for i in self._data]
-        return self
-
-    # ==================== Save ==================== #
-    def resize(self, shape):
-        raise NotImplementedError
-
-    def flush(self):
-        [i.flush() for i in self._data]
+        idx = [slice(i[0], i[1]) for i in idx]
+        none_idx = [slice(None, None)] * len(idx)
+        # ====== check other data ====== #
+        batches = [idx]
+        for d in self._data[1:]:
+            if len(d.shape) > 0 and d.shape[0] == shape[0]:
+                batches.append(idx)
+            else:
+                batches.append(none_idx)
+        for b in zip(*batches):
+            data = self._merge_func([i[j] for i, j in zip(self._data, b)])
+            yield self._transformer(data)

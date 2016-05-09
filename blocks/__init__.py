@@ -9,8 +9,6 @@ def auto_config():
     import sys
     import re
     ODIN_FLAGS = os.getenv("ODIN", "")
-    if len(ODIN_FLAGS) == 0:
-        return None
 
     # ====== specific pattern ====== #
     valid_device_name = re.compile('(cuda|gpu)\d+')
@@ -124,6 +122,8 @@ def auto_config():
 # Keras config
 # ===========================================================================
 autoconfig = auto_config()
+import numpy
+RNG_GENERATOR = numpy.random.RandomState(autoconfig.seed)
 
 import blocks.version
 __version__ = blocks.version.version
