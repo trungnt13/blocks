@@ -159,6 +159,10 @@ class Task(object):
     def set_task(self, func, data, epoch=1, p=1., preprocess=None, name=None):
         '''
         '''
+        if not isinstance(data, (list, tuple)):
+            data = [data]
+        data = [self._dataset[i] if isinstance(i, (str, tuple, list)) else i
+                for i in data]
         self._task = TaskDescriptor(func, data, epoch, 1.,
                                     batch_size=self._batch_size,
                                     seed=self._rng.randint(10e8),
@@ -175,6 +179,10 @@ class Task(object):
             int => number of main task's iteration before this task is executed
             float => percentage of epoch of main task before this task is executed
         '''
+        if not isinstance(data, (list, tuple)):
+            data = [data]
+        data = [self._dataset[i] if isinstance(i, (str, tuple, list)) else i
+                for i in data]
         self._subtask[TaskDescriptor(func, data, epoch, p,
                                      batch_size=self._batch_size,
                                      seed=self._rng.randint(10e8),
@@ -184,6 +192,10 @@ class Task(object):
 
     def set_crosstask(self, func, data, epoch=float('inf'), p=0.5,
                       when=0, preprocess=None, name=None):
+        if not isinstance(data, (list, tuple)):
+            data = [data]
+        data = [self._dataset[i] if isinstance(i, (str, tuple, list)) else i
+                for i in data]
         self._crosstask[TaskDescriptor(func, data, epoch, p,
                                        batch_size=self._batch_size,
                                        seed=self._rng.randint(10e8),
@@ -296,11 +308,20 @@ class Task(object):
 # ======================================================================
 class MainLoop(CallbackList):
 
-    def __init__(self):
+    def __init__(self, batch_size=256, shuffle=True, parallel=False):
         super(MainLoop, self).__init__()
         self._tasks = queue()
+        self._parallel = parallel
 
-    def add_task(self):
+        self._batch_size = batch_size
+        self._shuffle = shuffle
+
+    def add_task(self, task):
+        if isinstance(task, Task):
+            task.set_callback(self)
+            self._tasks.append(task)
+
+    def create_task(self, func, data, epoch=1, p=1., preprocess=None, name=None):
         pass
 
     def run(self):

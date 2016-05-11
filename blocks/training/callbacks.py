@@ -8,7 +8,6 @@ from collections import defaultdict
 import numpy as np
 
 from blocks.utils import Progbar
-from blocks.utils.profile import Profile, Timer
 
 __all__ = [
     'Callback',
