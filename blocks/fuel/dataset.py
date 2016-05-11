@@ -26,10 +26,11 @@ def _parse_data_descriptor(path, name):
     if not os.path.isfile(path):
         return None
 
-    is_mmap = MmapData.PATTERN.search(name)
+    mmap_match = MmapData.PATTERN.match(name)
     # memmap files
-    if is_mmap is not None:
-        name, dtype, shape = name.split('.')
+    if mmap_match is not None and \
+       len([i for i in mmap_match.groups() if i is not None]) == 4:
+        name, dtype, shape = mmap_match.group(1), mmap_match.group(2), mmap_match.group(3)
         dtype = np.dtype(dtype)
         shape = eval(shape)
         # shape[1:], because first dimension can be resize afterward
@@ -184,6 +185,8 @@ class Dataset(object):
                              " are supported: {} and {}"
                              "".format(
                             datatype, Hdf5Data.SUPPORT_EXT, MmapData.SUPPORT_EXT))
+        dtype = value.dtype if value is not None and dtype is None else dtype
+        shape = value.shape if value is not None and shape is None else shape
         return_data = None
         return_key = None
         # ====== find defined data ====== #
@@ -199,7 +202,7 @@ class Dataset(object):
                 # return type is just a descriptor, create MmapData for it
                 if not isinstance(return_data, Data):
                     return_data = MmapData(os.path.join(self.path, _name),
-                        dtype=_dtype, shape=(return_data[0],) + _shape, mode='r+')
+                        dtype=_dtype, shape=(return_data[0],) + _shape)
                     self._data_map[return_key] = return_data
                 # append value
                 if value is not None and value.shape[1:] == _shape:
@@ -209,14 +212,13 @@ class Dataset(object):
         # ====== auto create new data, if cannot find any match ====== #
         if return_data is None and dtype is not None and shape is not None:
             if datatype in MmapData.SUPPORT_EXT:
-                return_data = MmapData(os.path.join(self.path, name),
-                    dtype=dtype, shape=shape, mode='w+', override=True)
+                return_data = MmapData(os.path.join(self.path, name), dtype=dtype, shape=shape)
             else:
                 f = open_hdf5(os.path.join(self.path, self._default_hdf5))
                 return_data = Hdf5Data(name, f, dtype=dtype, shape=shape)
             # first time create the dataset, assign init value
             if value is not None and value.shape == return_data.shape:
-                return_data[:] = value
+                return_data.prepend(value)
                 return_data.flush()
             # store new key
             return_key = (return_data.name, return_data.dtype, return_data.shape[1:])
@@ -295,9 +297,19 @@ class Dataset(object):
 
     # ==================== Some info ==================== #
     def __getitem__(self, key):
+        if isinstance(key, str):
+            return self.get_data(name=key)
+        params = {}
         if isinstance(key, (tuple, list)):
-            return self.get_data(*key)
-        return self.get_data(name=key)
+            for i in key:
+                if isinstance(i, str):
+                    try:
+                        params['dtype'] = np.dtype(i)
+                    except:
+                        params['name'] = i
+                elif isinstance(i, (tuple, list)):
+                    params['shape'] = i
+        return self.get_data(**params)
 
     def __str__(self):
         s = ['====== Dataset:%s Total:%d ======' %

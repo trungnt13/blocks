@@ -9,10 +9,10 @@ from math import ceil
 from abc import ABCMeta, abstractmethod
 from six import add_metaclass
 from six.moves import range, zip, zip_longest
+from itertools import chain
 
 import numpy as np
 
-from blocks import RNG_GENERATOR
 from blocks.utils.decorators import autoattr, cache
 from blocks.utils import queue, struct
 
@@ -20,7 +20,6 @@ from blocks.utils import queue, struct
 __all__ = [
     'open_hdf5',
     'close_all_hdf5',
-    'resize_memmap',
     'get_all_hdf_dataset',
 
     'Data',
@@ -34,27 +33,6 @@ __all__ = [
 # ===========================================================================
 # Helper function
 # ===========================================================================
-def resize_memmap(memmap, shape):
-    if not isinstance(memmap, np.core.memmap):
-        raise ValueError('Object must be instance of numpy memmap')
-
-    if not isinstance(shape, (tuple, list)):
-        shape = (shape,)
-    if any(i != j for i, j in zip(shape[1:], memmap.shape[1:])):
-        raise ValueError('Resize only support the first dimension, but '
-                         '{} != {}'.format(shape[1:], memmap.shape[1:]))
-    if shape[0] < memmap.shape[0]:
-        raise ValueError('Only support extend memmap, and do not shrink the memory')
-    elif shape[0] == memmap.shape[0]:
-        return memmap
-    memmap.flush()
-    memmap = np.memmap(memmap.filename,
-                       dtype=memmap.dtype,
-                       mode='r+',
-                       shape=(shape[0],) + tuple(memmap.shape[1:]))
-    return memmap
-
-
 def _estimate_shape(shape, func):
     ''' This method cannot estimate the shape accurately if you use slice '''
     shape0 = (12 + 8) // 10 * 13
@@ -132,7 +110,7 @@ class Data(object):
         self._batch_size = 256
         self._start = 0.
         self._end = 1.
-        self._seed = None
+        self._seed = queue()
         self._status = 0 # flag show that array valued changed
         # main data object that have shape, dtype ...
         self._data = None
@@ -231,7 +209,8 @@ class Data(object):
     def set_batch(self, batch_size=None, seed=None, start=None, end=None):
         if isinstance(batch_size, int) and batch_size > 0:
             self._batch_size = batch_size
-        self._seed = seed
+        if seed is not None:
+            self._seed.put(seed)
         if start is not None and start > 0. - 1e-12:
             self._start = start
         if end is not None and end > 0. - 1e-12:
@@ -249,7 +228,7 @@ class Data(object):
     # ==================== iteration ==================== #
     def __iter__(self):
         batch_size = self._batch_size
-        seed = self._seed
+        seed = self._seed.pop_default()
         shape = self._data.shape
 
         # custom batch_size
@@ -266,7 +245,6 @@ class Data(object):
         if seed is not None:
             np.random.seed(seed)
             np.random.shuffle(idx)
-            self._seed = None
 
         for i in idx:
             start, end = i
@@ -530,22 +508,6 @@ class MmapData(Data):
     dtype : data-type, optional
         The data-type used to interpret the file contents.
         Default is `uint8`.
-    mode : {'r+', 'r', 'w+', 'c'}, optional
-        The file is opened in this mode:
-
-        +------+-------------------------------------------------------------+
-        | 'r'  | Open existing file for reading only.                        |
-        +------+-------------------------------------------------------------+
-        | 'r+' | Open existing file for reading and writing.                 |
-        +------+-------------------------------------------------------------+
-        | 'w+' | Create or overwrite existing file for reading and writing.  |
-        +------+-------------------------------------------------------------+
-        | 'c'  | Copy-on-write: assignments affect data in memory, but       |
-        |      | changes are not saved to disk.  The file on disk is         |
-        |      | read-only.                                                  |
-        +------+-------------------------------------------------------------+
-
-        Default is 'r+'.
     shape : tuple, optional
         The desired shape of the array. If ``mode == 'r'`` and the number
         of remaining bytes after `offset` is not a multiple of the byte-size
@@ -555,93 +517,66 @@ class MmapData(Data):
     """
 
     # name.float32.(8,12)
-    PATTERN = re.compile('[a-zA-Z0-9_-]*\.[<a-zA-Z]*\d{1,2}.\(\d+(,\d*)*\)')
-    NAME_PATTERN = re.compile('[a-zA-Z0-9_-]*')
-    SHAPE_PATTERN = re.compile('\.\(\d+(,\d*)*\)')
-    DTYPE_PATTERN = re.compile('\.[<a-zA-Z]*\d{1,2}')
+    PATTERN = re.compile('([a-zA-Z0-9_-]*)' + '\.?'
+                         '([<a-zA-Z]*\d{1,2})?' + '\.?'
+                         '(\(\d+(,\d*)*\))?')
     COUNT = 0
 
     SUPPORT_EXT = ['.mmap', '.memmap', '.mem']
 
-    def __init__(self, path, dtype='float32', shape=None, mode='r+',
-        override=True):
+    def __init__(self, path, dtype=None, shape=None):
         super(MmapData, self).__init__()
         if MmapData.COUNT > MAX_OPEN_MMAP:
             raise ValueError('Only allowed to open maximum of {} memmap file'.format(MAX_OPEN_MMAP))
         MmapData.COUNT += 1
 
         # validate path
+        path = os.path.abspath(path)
         name = os.path.basename(path)
-        path = path.replace(name, '')
-        path = path if len(path) > 0 else '.'
+        path = os.path.dirname(path)
         if name[0] == '.':
             name = name[1:]
 
-        name_match = self.NAME_PATTERN.search(name)
-        shape_match = self.SHAPE_PATTERN.search(name)
-        dtype_match = self.DTYPE_PATTERN.search(name)
-        if shape_match is not None:
-            shape = name[shape_match.start():shape_match.end()][1:]
-            shape = eval(shape)
-        if dtype_match is not None:
-            dtype = name[dtype_match.start():dtype_match.end()][1:]
-            dtype = np.dtype(dtype)
-        if name_match is not None:
-            name = name[name_match.start():name_match.end()]
-        else:
-            raise ValueError('Cannot find name of memmap from given path')
-
-        if dtype is None:
-            raise ValueError('Must specify dtype at the beginning, either in '
-                             'the path or dtype argument.')
+        match = MmapData.PATTERN.match(name)
+        name = match.group(1)
+        dtype = dtype if match.group(2) is None else np.dtype(match.group(2))
+        shape = shape if match.group(3) is None else eval(match.group(3))
         if shape is not None:
             shape = tuple([1 if i is None else i for i in shape])
-
-        # check mode
-        if 'r' in mode or 'c' in mode:
-            files = os.listdir(path)
-            for f in files:
-                match = self.PATTERN.match(f)
-                if match is not None:
-                    _name, _dtype, _shape = f.split('.')
+        # ====== try to find relevant file if possible ====== #
+        mmap_path = None
+        mode = 'r+'
+        files = os.listdir(path)
+        for f in files:
+            match = self.PATTERN.match(f)
+            if match is not None:
+                _name, _dtype, _shape = match.group(1), match.group(2), match.group(3)
+                if _name is not None and _dtype is not None and _shape is not None:
+                    _dtype = np.dtype(_dtype)
                     _shape = eval(_shape)
-                    if name == _name and dtype == _dtype:
-                        if shape is None or shape[1:] == _shape[1:]:
-                            shape = _shape
-            mmap_path = os.path.join(path, MmapData.info_to_name(name, shape, dtype))
-            if not os.path.exists(mmap_path):
-                raise ValueError('File not exist, given path:' + mmap_path)
-        elif 'w' in mode:
+                    if name == _name:
+                        if dtype is not None and _dtype != dtype:
+                            continue
+                        if shape is not None and shape[1:] != _shape[1:]:
+                            continue
+                        shape = _shape
+                        dtype = _dtype
+                        mmap_path = os.path.join(path,
+                                                 MmapData.info_to_name(name, shape, dtype))
+                        break
+        # ====== couldn't find anything, create new file ====== #
+        if mmap_path is None:
+            dtype = 'float32' if dtype is None else dtype
             if shape is None:
                 raise ValueError('dtype and shape must be specified in write '
                                  'mode, but shape={} and dtype={}'
                                  ''.format(shape, dtype))
-            # the main issue is 2 files with the same name can have different
-            # shape and dtype (this cannot happen)
-            files = os.listdir(path)
-            for f in files:
-                if self.PATTERN.match(f) is not None:
-                    _name, _dtype, _shape = f.split('.')
-                    _shape = eval(_shape)
-                    if _name == name and _dtype == dtype and shape[1:] == _shape[1:]:
-                        if not override:
-                            raise ValueError("memmap with the same name={} and dtype={} "
-                                            "but with different shape already existed "
-                                            "with name={}".format(name, dtype, f))
-                        else: # remove old file to override
-                            try:
-                                os.remove(f)
-                            except:
-                                pass
             mmap_path = os.path.join(path, MmapData.info_to_name(name, shape, dtype))
-        else:
-            raise ValueError('No support for given mode:' + str(mode))
-
+            mode = 'w+'
         # store variables
         self._data = np.memmap(mmap_path, dtype=dtype, shape=shape, mode=mode)
         self._name = name.split('.')[0]
         self._path = path
-        self._mode = mode
 
     def __del__(self):
         MmapData.COUNT -= 1
@@ -658,6 +593,7 @@ class MmapData(Data):
     @staticmethod
     def info_to_name(name, shape, dtype):
         shape = [str(i) for i in shape]
+        dtype = str(np.dtype(dtype))
         #(1000) will be understand as int (error)
         # should be (1000,)
         if len(shape) == 1:
@@ -795,10 +731,7 @@ class MmapData(Data):
 
     # ==================== Save ==================== #
     def resize(self, shape):
-        mode = self._mode
         mmap = self._data
-        if mode == 'r' or mode == 'c':
-            return
 
         if not isinstance(shape, (tuple, list)):
             shape = (shape,)
@@ -822,10 +755,6 @@ class MmapData(Data):
         return self
 
     def flush(self):
-        mode = self._mode
-        if mode == 'r' or mode == 'c':
-            return
-
         old_path = self._data.filename
         new_path = os.path.join(os.path.dirname(self.path),
                     MmapData.info_to_name(self.name, self._data.shape, self.dtype))
@@ -833,9 +762,7 @@ class MmapData(Data):
         if old_path != new_path:
             del self._data
             os.rename(old_path, new_path)
-            if 'w' in mode:
-                mode = 'r+'
-            self._data = np.memmap(new_path, mode=mode)
+            self._data = np.memmap(new_path, mode='r+')
 
 
 # ===========================================================================
@@ -921,11 +848,11 @@ class Hdf5Data(Data):
 
     SUPPORT_EXT = ['.h5', '.hdf', '.hdf5']
 
-    def __init__(self, dataset, hdf=None, dtype='float32', shape=None,
-        chunk_size=32):
+    def __init__(self, dataset, hdf=None, dtype='float32', shape=None):
         super(Hdf5Data, self).__init__()
 
-        self._chunk_size = chunk_size
+        # default chunks size is 32 (reduce complexity of the works)
+        self._chunk_size = 32
         if isinstance(hdf, str):
             hdf = open_hdf5(hdf, mode='a')
         if hdf is None and not isinstance(dataset, h5py.Dataset):
@@ -941,7 +868,7 @@ class Hdf5Data(Data):
                                      'dataset has not created in hdf5 file.')
                 shape = tuple([0 if i is None else i for i in shape])
                 hdf.create_dataset(dataset, dtype=dtype,
-                    chunks=_get_chunk_size(shape, chunk_size),
+                    chunks=_get_chunk_size(shape, self._chunk_size),
                     shape=shape, maxshape=(None, ) + shape[1:])
 
             self._data = hdf[dataset]
@@ -1109,7 +1036,7 @@ class Hdf5Data(Data):
         elif shape[0] == self._data.shape[0]:
             return self
 
-        self._data.resize(self._data.shape[0] + shape[0], axis=0)
+        self._data.resize(shape[0], axis=0)
         return self
 
     def flush(self):
@@ -1159,14 +1086,8 @@ class DataIterator(MutableData):
                              ''.format([i.shape for i in data]))
         # ====== defaults parameters ====== #
         self._data = data
-        self._batch_size = 256
-
-        self._start = 0.
-        self._end = 1.
-
         self._sequential = False
         self._distribution = [1.] * len(data)
-        self._seed = None
 
     # ==================== properties ==================== #
     @property
@@ -1270,22 +1191,21 @@ class DataIterator(MutableData):
 
     # ==================== main logic of batch iterator ==================== #
     def __iter__(self):
-        if self._seed is not None:
-            rng = np.random.RandomState(self._seed)
+        seed = self._seed.pop_default()
+        if seed is not None:
+            rng = np.random.RandomState(seed)
         else: # deterministic RandomState
             rng = struct()
             rng.randint = lambda x: None
-            rng.permutation = lambda x: range(x)
-        self._seed = None # remove the seed for next time
+            rng.permutation = lambda x: slice(None, None)
         # ====== easy access many private variables ====== #
         sequential = self._sequential
         start, end = self._start, self._end
         batch_size = self._batch_size
-        data = np.asarray(self._data)
         distribution = np.asarray(self._distribution)
         # shuffle order of data (good for sequential mode)
-        idx = rng.permutation(len(data))
-        data = data[idx]
+        idx = rng.permutation(len(self._data))
+        data = self._data[idx] if isinstance(idx, slice) else [self._data[i] for i in idx]
         distribution = distribution[idx]
         shape = [i.shape[0] for i in data]
         # ====== prepare distribution information ====== #
@@ -1360,13 +1280,33 @@ class DataIterator(MutableData):
 
     # ==================== Slicing methods ==================== #
     def __getitem__(self, y):
-        pass
+        start = self._start
+        end = self._end
+        idx = [(_apply_approx(i.shape[0], start), _apply_approx(i.shape[0], end))
+               for i in self._data]
+        idx = [(j[0], int(round(j[0] + i * (j[1] - j[0]))))
+               for i, j in zip(self._distribution, idx)]
+        size = np.cumsum([i[1] - i[0] for i in idx])
+        if isinstance(y, int):
+            idx = _get_closest_id(size, y)
+            return self._data[idx][y]
+        elif isinstance(y, slice):
+            return self.array[y]
+        else:
+            raise ValueError('No support for indices type={}'.format(type(y)))
+
+
+def _get_closest_id(size, y):
+    idx = 0
+    for i, j in enumerate(size):
+        if y >= j:
+            idx = i + 1
+    return idx
+
 
 # ===========================================================================
 # DataMerge
 # ===========================================================================
-
-
 class DataMerge(MutableData):
 
     '''
@@ -1433,7 +1373,7 @@ class DataMerge(MutableData):
     # ==================== iteration ==================== #
     def __iter__(self):
         batch_size = self._batch_size
-        seed = self._seed
+        seed = self._seed.pop_default()
         # ====== prepare root first ====== #
         shape = self._data[0].shape
         # custom batch_size
@@ -1450,7 +1390,6 @@ class DataMerge(MutableData):
         if seed is not None:
             np.random.seed(seed)
             np.random.shuffle(idx)
-            self._seed = None
         idx = [slice(i[0], i[1]) for i in idx]
         none_idx = [slice(None, None)] * len(idx)
         # ====== check other data ====== #

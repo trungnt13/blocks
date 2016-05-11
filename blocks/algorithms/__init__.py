@@ -315,33 +315,6 @@ class GradientDescent(UpdatesAlgorithm):
         logger.debug("Computing parameter steps...")
         self.steps, self.step_rule_updates = (
             self.step_rule.compute_steps(self.gradients))
-<<<<<<< HEAD
-        self.total_step_norm = l2_norm(
-            self.steps.values()).copy(name="total_step_norm")
-        self.on_unused_sources = on_unused_sources
-        self.allow_input_downcast = allow_input_downcast
-        self.theano_func_kwargs = (theano_func_kwargs if theano_func_kwargs
-                                   is not None else dict())
-
-    def initialize(self):
-        logger.info("Initializing the training algorithm")
-        all_updates = self.updates
-        # Note: the gradients are computed in the same order in which
-        # the parameters were given. Keep it like that to ensure
-        # reproducibility.
-        for parameter in self.parameters:
-            all_updates.append((parameter, parameter - self.steps[parameter]))
-        all_updates += self.step_rule_updates
-        self._function = theano.function(
-            self.inputs, [], updates=all_updates,
-            allow_input_downcast=self.allow_input_downcast,
-            **self.theano_func_kwargs)
-        logger.info("The training algorithm is initialized")
-
-    def _validate_source_names(self, batch):
-        in_names = [v.name for v in self.inputs]
-=======
->>>>>>> 30ab1532b16a6b98afe9d4501e9bf9eaba000377
 
         # Same as gradient_values above: the order may influence a
         # bunch of things, so enforce a consistent one (don't use

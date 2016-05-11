@@ -612,12 +612,14 @@ class queue(object):
         self._data = []
         self._idx = 0
 
+    # ====== queue ====== #
     def put(self, value):
         self._data.append(value)
 
     def append(self, value):
         self._data.append(value)
 
+    # ====== dequeue ====== #
     def pop(self):
         if self._idx == len(self._data):
             raise ValueError('Queue is empty')
@@ -627,6 +629,19 @@ class queue(object):
     def get(self):
         if self._idx == len(self._data):
             raise ValueError('Queue is empty')
+        self._idx += 1
+        return self._data[self._idx - 1]
+
+    # ====== dqueue with default ====== #
+    def pop_default(self, default=None):
+        if self._idx == len(self._data):
+            return default
+        self._idx += 1
+        return self._data[self._idx - 1]
+
+    def get_default(self, default=None):
+        if self._idx == len(self._data):
+            return default
         self._idx += 1
         return self._data[self._idx - 1]
 
