@@ -17,6 +17,7 @@ def auto_config():
 
     floatX = 'float32'
     backend = 'theano'
+    optimizer = 'fast_run'
     epsilon = 10e-8
     device = []
     cnmem = 0.
@@ -56,6 +57,8 @@ def auto_config():
 
             i = i[match.start():match.end()].replace('cnmem', '').replace('=', '')
             cnmem = float(i)
+        elif 'fast_compile' in i:
+            optimizer = 'fast_compile'
         # ====== seed ====== #
         elif 'seed' in i:
             match = valid_seed.match(i)
@@ -77,6 +80,7 @@ def auto_config():
 
     sys.stderr.write('[Auto-Config] Device : %s\n' % device)
     sys.stderr.write('[Auto-Config] Backend: %s\n' % backend)
+    sys.stderr.write('[Auto-Config] Optimizer: %s\n' % optimizer)
     sys.stderr.write('[Auto-Config] FloatX : %s\n' % floatX)
     sys.stderr.write('[Auto-Config] Epsilon: %s\n' % epsilon)
     sys.stderr.write('[Auto-Config] CNMEM  : %s\n' % cnmem)
@@ -92,8 +96,8 @@ def auto_config():
             device = 'device=gpu'
         else:
             contexts = "contexts="
-            contexts += ';'.join(['dev%d->cuda%d' % (i, int(_.replace('cuda', '')))
-                                 for i, _ in enumerate(device)]) + ','
+            contexts += ';'.join(['dev%d->cuda%d' % (j, int(_.replace('cuda', '')))
+                                 for j, _ in enumerate(device)]) + ','
             # TODO: bizarre degradation in performance if not specify device=gpu
             device = 'device=gpu'
         flags = contexts + device + ",mode=FAST_RUN,floatX=%s" % floatX
@@ -105,6 +109,9 @@ def auto_config():
         if cnmem > 0. and cnmem <= 1.:
             flags += ',lib.cnmem=%.2f,allow_gc=True' % cnmem
         os.environ['THEANO_FLAGS'] = flags
+        if len(optimizer) > 0:
+            flags += ',optimizer={}'.format(optimizer)
+        flags += ',optimizer_including=unsafe'
     elif backend == 'tensorflow':
         pass
     else:

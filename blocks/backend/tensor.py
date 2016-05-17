@@ -8,12 +8,20 @@
 # ===========================================================================
 from __future__ import division, absolute_import
 
-import theano
-from theano import tensor as T
-import numpy as np
 from collections import OrderedDict
 
+import numpy as np
+
+import theano
+from theano import tensor as T
+from theano import Variable
+from theano.gof.graph import Constant
+from theano.tensor.shared_randomstreams import RandomStateSharedVariable
+from theano.tensor.sharedvar import SharedVariable
+
 from blocks import autoconfig
+from blocks.graph import add_shape, ComputationGraph
+from blocks.roles import add_role, has_roles, INPUT, TRAINING
 
 FLOATX = autoconfig.floatX
 EPSILON = autoconfig.epsilon
@@ -48,10 +56,6 @@ if on_gpu():
     del _
 
 
-def get_session():
-    return _on_gpu()
-
-
 # ===========================================================================
 # VARIABLE MANIPULATION
 # ===========================================================================
@@ -68,7 +72,9 @@ def variable(value, dtype=FLOATX, name=None, broadcastable=None, target='dev0'):
     if target is not None:
         kwargs['target'] = target
 
-    return theano.shared(value=value, name=name, strict=False, **kwargs)
+    variable = theano.shared(value=value, name=name, strict=False, **kwargs)
+    add_shape(variable, value.shape)
+    return variable
 
 
 def zeros_var(shape, dtype=FLOATX, name=None):
@@ -83,14 +89,44 @@ def ones_var(shape, dtype=FLOATX, name=None):
     return variable(np.ones(shape), dtype, name)
 
 
+def is_shared_variable(variable):
+    """Check if a variable is a Theano shared variable.
+
+    Notes
+    -----
+    This function excludes shared variables that store the state of Theano
+    random number generators.
+
+    """
+    return (isinstance(variable, SharedVariable) and
+            not isinstance(variable, RandomStateSharedVariable) and
+            not hasattr(variable.tag, 'is_rng'))
+
+
 def is_variable(v):
-    return isinstance(v, theano.compile.SharedVariable)
+    return isinstance(v, Variable)
+
+
+def is_training(v):
+    """ A variable is in TRAINING mode if at least one of its descendant
+    has TRAINING roles
+
+    Note
+    ----
+    TRAINING role can be override by: ``add_role(x, DEPLOYING)``
+
+    """
+    if hasattr(v, 'tag') and hasattr(v.tag, 'roles'):
+        temp = ComputationGraph(v)
+        for i in temp.variables:
+            if has_roles(i, TRAINING, exact=True):
+                return True
+    return False
 
 _PLACEHOLDER_ID = 0
-_PLACEHOLDER_SHAPE = {}
 
 
-def placeholder(shape=None, ndim=None, dtype=FLOATX, name=None):
+def placeholder(shape=None, ndim=None, dtype=FLOATX, name=None, for_training=False):
     '''Instantiate an input data placeholder variable.
     '''
     if shape is None and ndim is None:
@@ -105,51 +141,72 @@ def placeholder(shape=None, ndim=None, dtype=FLOATX, name=None):
     name = [name_prefix] if name is None else [name_prefix, name]
     name = ''.join(name)
     placeholder = T.TensorType(dtype, broadcast)(name)
+    add_role(placeholder, INPUT)
+    if for_training:
+        add_role(placeholder, TRAINING)
     # store the predefined shape of placeholder
-    _PLACEHOLDER_SHAPE[name] = \
-        [None for _ in range(ndim)] if shape is None else shape
+    if shape is not None:
+        add_shape(placeholder, shape)
     return placeholder
 
 
-def is_expression(v):
-    '''placeholder also is an expression'''
-    return isinstance(v, theano.tensor.TensorVariable)
+def is_placeholder(variable):
+    """Check if variable is a user-provided graph input.
 
+    To be considered an input the variable must have no owner, and not
+    be a constant or shared variable.
 
-def is_placeholder(v):
-    if is_expression(v) and v.name in _PLACEHOLDER_SHAPE:
-        return True
-    return False
+    Parameters
+    ----------
+    variable : :class:`~tensor.TensorVariable`
+
+    Returns
+    -------
+    bool
+        ``True`` If the variable is a user-provided input to the graph.
+
+    """
+    return (not variable.owner and
+            not isinstance(variable, SharedVariable) and
+            not isinstance(variable, Constant))
 
 
 def eval(x):
     '''Run a graph.
     '''
     # just a hack to return placeholder shape when eval
-    if x in _PLACEHOLDER_SHAPE:
-        return _PLACEHOLDER_SHAPE[x]
     return x.eval()
 
 
 # ===========================================================================
 # Shape operator
 # ===========================================================================
-def shape(x):
+def shape(x, none=True):
     '''Return the shape of a tensor.
 
     Warning: type returned will be different for
     Theano backend (Theano tensor type) and TF backend (TF TensorShape).
+
+    Parameters
+    ----------
+    none : bool
+        allow None value, otherwise, all None (and -1) dimensions are converted to
+        intermediate shape variable
     '''
     shape = x.shape
-    # little to eval the shape of placeholder
-    if hasattr(x, 'name'):
-        if x.name in _PLACEHOLDER_SHAPE:
-            _PLACEHOLDER_SHAPE[shape] = _PLACEHOLDER_SHAPE[x.name]
+    if hasattr(x, 'tag') and hasattr(x.tag, 'shape') and x.tag.shape is not None:
+        shape = x.tag.shape
+    # remove None value
+    if not none:
+        shape = tuple([x.shape[i] if j is None or j < 0 else j for i, j in enumerate(shape)])
     return shape
 
 
 def int_shape(x):
-    return x.shape.eval()
+    s = shape(x)
+    if hasattr(s, 'eval'):
+        return s.eval()
+    return tuple([i.eval() if hasattr(i, 'eval') else i for i in s])
 
 
 def ndim(x):
@@ -163,11 +220,10 @@ def broadcastable(x):
 def addbroadcast(x, *axes):
     return T.addbroadcast(x, *axes)
 
+
 # ===========================================================================
 # Predefined data
 # ===========================================================================
-
-
 def zeros(shape, dtype=FLOATX, name=None):
     '''Instantiate an all-zeros variable.
     '''
@@ -213,7 +269,7 @@ def castX(x):
 # ===========================================================================
 def dot(x, y):
     # TODO: float16 overflow
-    if config.floatX() == 'float16':
+    if autoconfig.floatX == 'float16':
         return T.dot(x.astype('float32'), y.astype('float32')).astype('float16')
     return T.dot(x, y)
 
@@ -367,8 +423,19 @@ def concatenate(tensors, axis=-1):
 
 
 def reshape(x, shape):
-    shape = tuple([-1 if i is None else i for i in shape])
-    return T.reshape(x, shape)
+    ''' x.shape = [25, 08, 12]
+    reshape(shape=([1], [2], [0]))
+    => x.shape = (08, 12, 25)
+    '''
+    shape = []
+    for i in shape:
+        if i is None:
+            shape.append(-1)
+        elif isinstance(i, (list, tuple)):
+            shape.append(x.shape[i[0]])
+        else:
+            shape.append(i)
+    return T.reshape(x, tuple(shape))
 
 
 def dimshuffle(x, pattern):
@@ -522,6 +589,8 @@ def set_subtensor(x, y):
 class Function(object):
 
     def __init__(self, inputs, outputs, updates=[], **kwargs):
+        if not isinstance(inputs, (tuple, list)):
+            inputs = [inputs]
         if isinstance(updates, OrderedDict):
             updates = updates.items()
         # ====== add and reset global update ====== #

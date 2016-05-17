@@ -18,6 +18,7 @@ from .callbacks import Callback, CallbackList
 __all__ = [
     'TaskDescriptor',
     'Task',
+    'MainLoop'
 ]
 
 
@@ -129,11 +130,7 @@ class Task(object):
         self._subtask = {} # run 1 epoch after given frequence
         self._crosstask = {} # randomly run 1 iter given probability
 
-        if shuffle:
-            self._rng = np.random.RandomState(RNG_GENERATOR.randint(10e8))
-        else:
-            self._rng = struct()
-            self._rng.randint = lambda *args, **kwargs: None
+        self.set_shuffle(shuffle)
 
         if isinstance(dataset, str):
             dataset = Dataset(dataset)
@@ -144,11 +141,26 @@ class Task(object):
 
     # ==================== properties ==================== #
     @property
+    def batch_size(self):
+        return self._batch_size
+
+    @property
+    def shuffle(self):
+        return isinstance(self._rng, np.random.RandomState)
+
+    @property
     def name(self):
         return self._name
 
     def __str__(self):
         return 'Task'
+
+    def set_shuffle(self, shuffle):
+        if shuffle:
+            self._rng = np.random.RandomState(RNG_GENERATOR.randint(10e8))
+        else:
+            self._rng = struct()
+            self._rng.randint = lambda *args, **kwargs: None
 
     def set_callback(self, callback):
         if isinstance(callback, Callback):
@@ -175,9 +187,14 @@ class Task(object):
         '''
         Parameters
         ----------
-        when : float or int
+        when: float or int
             int => number of main task's iteration before this task is executed
             float => percentage of epoch of main task before this task is executed
+        freq: float or int
+            int => number of main task's iteration before this task is executed
+            float => percentage of epoch of main task before this task is executed
+        preprocess: function
+            input is list of data, output is transformed data for batch
         '''
         if not isinstance(data, (list, tuple)):
             data = [data]
@@ -308,21 +325,31 @@ class Task(object):
 # ======================================================================
 class MainLoop(CallbackList):
 
-    def __init__(self, batch_size=256, shuffle=True, parallel=False):
+    def __init__(self, batch_size=256, dataset=None, shuffle=True, parallel=False):
         super(MainLoop, self).__init__()
         self._tasks = queue()
         self._parallel = parallel
 
         self._batch_size = batch_size
         self._shuffle = shuffle
+        self._dataset = dataset
 
-    def add_task(self, task):
-        if isinstance(task, Task):
-            task.set_callback(self)
-            self._tasks.append(task)
+    def add_task(self, *task):
+        for t in task:
+            if isinstance(t, Task):
+                if t.shuffle != self._shuffle:
+                    t.set_shuffle(self._shuffle)
+                t.set_callback(self)
+                self._tasks.put(t)
+        return self
 
     def create_task(self, func, data, epoch=1, p=1., preprocess=None, name=None):
-        pass
+        task = Task(self._batch_size, self._dataset, self._shuffle, name=name)
+        task.set_callback(self)
+        task.set_task(func, data, epoch=epoch, p=p, preprocess=preprocess, name=name)
+        self._tasks.put(task)
+        return task
 
     def run(self):
-        pass
+        while not self._tasks.empty():
+            self._tasks.pop().run()

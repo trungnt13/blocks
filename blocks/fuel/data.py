@@ -23,6 +23,7 @@ __all__ = [
     'get_all_hdf_dataset',
 
     'Data',
+    'ArrayData',
     'MmapData',
     'Hdf5Data',
     'DataIterator',
@@ -176,6 +177,10 @@ class Data(object):
                 self._data[start:end] **= Y
 
     # ==================== properties ==================== #
+    @property
+    def ndim(self):
+        return len(self.shape)
+
     @property
     def shape(self):
         # auto infer new shape
@@ -474,6 +479,64 @@ class MutableData(Data):
 
     def __ipow__(self, y):
         raise NotImplementedError
+
+
+# ===========================================================================
+# Array Data
+# ===========================================================================
+class ArrayData(Data):
+    """docstring for ArrayData"""
+
+    def __init__(self, array):
+        super(ArrayData, self).__init__()
+        if not isinstance(array, np.ndarray):
+            raise ValueError('array must be instance of numpy ndarray')
+        self._data = array
+
+    # ==================== abstract ==================== #
+    def resize(self, shape):
+        return self._data.resize(shape)
+
+    def flush(self):
+        pass
+
+    # ==================== high-level operators ==================== #
+    def sum(self, axis=0):
+        return self._data.sum(axis=axis)
+
+    def cumsum(self, axis=None):
+        return self._data.cumsum(axis=axis)
+
+    def sum2(self, axis=0):
+        return (self._data**2).sum(axis=axis)
+
+    def pow(self, y):
+        return self._data.pow(y)
+
+    def min(self, axis=None):
+        return self._data.min(axis=axis)
+
+    def argmin(self, axis=None):
+        return self._data.argmin(axis=axis)
+
+    def max(self, axis=None):
+        return self._data.max(axis=axis)
+
+    def argmax(self, axis=None):
+        return self._data.argmax(axis=axis)
+
+    def mean(self, axis=0):
+        return self._data.mean(axis=axis)
+
+    def var(self, axis=0):
+        return self._data.var(axis=axis)
+
+    def std(self, axis=0):
+        return self._data.std(axis=axis)
+
+    def normalize(self, axis, mean=None, std=None):
+        raise NotImplementedError
+
 
 # ===========================================================================
 # Memmap Data object

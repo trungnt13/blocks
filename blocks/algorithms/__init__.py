@@ -128,7 +128,8 @@ class UpdatesAlgorithm(TrainingAlgorithm):
         self.inputs = ComputationGraph(update_values).inputs
         logger.debug("Compiling training function...")
         self._function = theano.function(
-            self.inputs, [], updates=self.updates, **self.theano_func_kwargs)
+            self.inputs, [], updates=self.updates,
+            allow_input_downcast=True, **self.theano_func_kwargs)
         logger.info("The training algorithm is initialized")
 
     @property
@@ -138,6 +139,12 @@ class UpdatesAlgorithm(TrainingAlgorithm):
     @updates.setter
     def updates(self, value):
         self._updates = value
+
+    @property
+    def function(self):
+        if not hasattr(self, '_function'):
+            raise Exception('You must call initialized first.')
+        return self._function
 
     def add_updates(self, updates):
         """Add updates to the training process.

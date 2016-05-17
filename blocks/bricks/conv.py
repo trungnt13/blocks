@@ -7,7 +7,7 @@ from blocks.bricks import (Initializable, Feedforward, Sequence, Activation,
                            LinearLike)
 from blocks.bricks.base import application, Brick, lazy
 from blocks.roles import add_role, FILTER, BIAS
-from blocks.utils import shared_floatx_nans
+from blocks.utils import shared_floatx_nans, as_tuple
 
 
 class Convolutional(LinearLike):
@@ -73,13 +73,15 @@ class Convolutional(LinearLike):
                  image_size=(None, None), step=(1, 1), border_mode='valid',
                  tied_biases=False, **kwargs):
         super(Convolutional, self).__init__(**kwargs)
+        if border_mode == 'same':
+            border_mode = 'half'
 
         self.filter_size = filter_size
         self.num_filters = num_filters
         self.batch_size = batch_size
         self.num_channels = num_channels
         self.image_size = image_size
-        self.step = step
+        self.step = as_tuple(step, N=2, t=int)
         self.border_mode = border_mode
         self.tied_biases = tied_biases
 

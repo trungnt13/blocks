@@ -182,7 +182,7 @@ def compute_delta(data, width=9, order=1, axis=-1, trim=True):
     Parameters
     ----------
     data      : np.ndarray
-        the input data matrix (eg, spectrogram)
+        the input data matrix (eg, spectrogram), shape=(d, t)
     width     : int >= 3, odd [scalar]
         Number of frames over which to compute the delta feature
     order     : int > 0 [scalar]

@@ -6,6 +6,7 @@ import numpy as np
 
 from blocks import RNG_GENERATOR
 from blocks import autoconfig
+from . import tensor as K
 
 FLOATX = autoconfig.floatX
 EPSILON = autoconfig.epsilon
@@ -18,13 +19,9 @@ C = -0.5 * np.log(2 * PI)
 # ===========================================================================
 class _RandomWrapper(object):
 
-    def __init__(self, rng, state):
+    def __init__(self, rng):
         super(_RandomWrapper, self).__init__()
         self._rng = rng
-        self._state = state
-
-    def randint(self):
-        return self._state.randint(10e6)
 
     def normal(self, shape, mean, std, dtype=FLOATX):
         return self._rng.normal(size=shape, avg=mean, std=std, dtype=dtype)
@@ -34,9 +31,6 @@ class _RandomWrapper(object):
 
     def binomial(self, shape, p, dtype=FLOATX):
         return self._rng.binomial(size=shape, n=1, p=p, dtype=dtype)
-
-    def shuffle(self, x):
-        self._state.shuffle(x)
 
 
 def rng(seed=None):
@@ -66,22 +60,9 @@ def random_binomial(shape, p, dtype=FLOATX, seed=None):
     rng = RandomStreams(seed=seed)
     return rng.binomial(size=shape, n=1, p=p, dtype=dtype)
 
-'''
-more TODO:
 
-tensordot -> soon to be introduced in TF
-batched_tensordot -> reimplement
-'''
-
-
-def dropout(x, level, rescale=True, noise_shape=None,
-    seed=None, rng=None):
-    """Computes dropout.
-
-    With probability `keep_prob`, outputs the input element scaled up by
-    `1 / keep_prob`, otherwise outputs `0`.  The scaling is so that the expected
-    sum is unchanged.
-
+def _process_noise_dim(input_shape, dims):
+    """
     By default, each element is kept or dropped independently.  If `noise_shape`
     is specified, it must be
     [broadcastable](http://docs.scipy.org/doc/numpy/user/basics.broadcasting.html)
@@ -90,6 +71,30 @@ def dropout(x, level, rescale=True, noise_shape=None,
     and `noise_shape = [k, 1, 1, n]`, each batch and channel component will be
     kept independently and each row and column will be kept or not kept together.
 
+    Examples
+    --------
+    (None, 10, 10) with noise_dims=2
+    => (None, 10, 1)
+    """
+    if not isinstance(dims, (tuple, list)):
+        dims = [dims]
+    # ====== get noise shape ====== #
+    if dims is None:
+        noise_shape = input_shape
+    else:
+        return tuple([1 if i in dims else j
+                      for i, j in enumerate(input_shape)])
+    return noise_shape
+
+
+def apply_dropout(x, level, noise_dims=None, rescale=True, rng=None):
+    """Computes dropout.
+
+    With probability `keep_prob`, outputs the input element scaled up by
+    `1 / keep_prob`, otherwise outputs `0`.  The scaling is so that the expected
+    sum is unchanged.
+
+
     Parameters
     ----------
     x: A tensor.
@@ -97,29 +102,31 @@ def dropout(x, level, rescale=True, noise_shape=None,
         probability dropout values in given tensor
     rescale: bool
         whether rescale the outputs by dividing the retain probablity
-    noise_shape: A 1-D `Tensor` of type `int32`, representing the
-      shape for randomly generated keep/drop flags.
-    seed: int
-        A Python integer. Used to create random seeds. See
+    noise_dims: int or list(int)
+        these dimensions will be setted to 1 in noise_shape, and
+        used to broadcast the dropout mask.
     rng: `tensor.rng`
         random generator from tensor class
+
+    Note
+    ----
+    This function only apply noise on Variable with TRAINING role
     """
     # ====== Validate arguments ====== #
-    if seed is None:
-        seed = RNG_GENERATOR.randint(10e8)
     if rng is None:
-        rng = _RandomWrapper(RandomStreams(seed=seed),
-                             np.random.RandomState(seed=seed))
+        rng = _RandomWrapper(RandomStreams(seed=RNG_GENERATOR.randint(10e8)))
     elif isinstance(rng, RandomStreams):
-        rng = _RandomWrapper(rng, np.random.RandomState(seed=seed))
+        rng = _RandomWrapper(rng)
+    # ====== not a training variable NO dropout ====== #
+    if not K.is_training(x):
+        return x
     # ====== Dropout ====== #
     retain_prob = 1. - level
-    if noise_shape is None:
-        x = x * rng.binomial(shape=x.shape, p=retain_prob, dtype=x.dtype)
+    shape = K.shape(x, none=False)
+    if noise_dims is None:
+        x = x * rng.binomial(shape=shape, p=retain_prob, dtype=x.dtype)
     else:
-        # validate remove all None or -1 dimension
-        noise_shape = tuple([x.shape[i] if j is None or j < 0 else j
-                       for i, j in enumerate(noise_shape)])
+        noise_shape = _process_noise_dim(shape, noise_dims)
         # auto select broadcast shape
         broadcast = [i for i, j in enumerate(noise_shape) if j == 1]
         if len(broadcast) > 0:
@@ -133,12 +140,53 @@ def dropout(x, level, rescale=True, noise_shape=None,
     return x
 
 
+def apply_noise(x, sigma, noise_dims=None, noise_type='gaussian', rng=None):
+    """
+    Parameters
+    ----------
+    x: A tensor.
+    sigma : float or tensor scalar
+        Standard deviation of added Gaussian noise
+    noise_type: 'gaussian' (or 'normal'), 'uniform'
+        distribution used for generating noise
+    noise_dims: int or list(int)
+        these dimensions will be setted to 1 in noise_shape, and
+        used to broadcast the dropout mask.
+
+    Note
+    ----
+    This function only apply noise on Variable with TRAINING role
+    """
+    noise_type = noise_type.lower()
+    # ====== Validate arguments ====== #
+    if rng is None:
+        rng = _RandomWrapper(RandomStreams(seed=RNG_GENERATOR.randint(10e8)))
+    elif isinstance(rng, RandomStreams):
+        rng = _RandomWrapper(rng)
+    # ====== not a training variable NO dropout ====== #
+    if not K.is_training(x):
+        return x
+    # ====== applying noise ====== #
+    shape = K.shape(x, none=False)
+    noise_shape = (shape if noise_dims is None
+                   else _process_noise_dim(shape, noise_dims))
+    if 'normal' in noise_type or 'gaussian' in noise_type:
+        noise = rng.normal(shape=noise_shape, mean=0.0, std=sigma, dtype=x.dtype)
+    elif 'uniform' in noise_type:
+        noise = rng.uniform(shape=noise_shape, low=-sigma, high=sigma, dtype=x.dtype)
+        # no idea why uniform does not give any broadcastable dimensions
+        if noise_dims is not None:
+            broadcastable = [i for i, j in enumerate(noise_shape) if j == 1]
+            if len(broadcastable) > 0:
+                noise = T.addbroadcast(noise, *broadcastable)
+    return x + noise
+
+
 # ===========================================================================
 # Variational OPERATIONS
 # ===========================================================================
 def log_prob_bernoulli(p_true, p_approx, mask=None):
-    """
-    Compute log probability of some binary variables with probabilities
+    """ Compute log probability of some binary variables with probabilities
     given by p_true, for probability estimates given by p_approx. We'll
     compute joint log probabilities over row-wise groups.
     Note
@@ -198,7 +246,7 @@ def log_prob_gaussian2(mu_true, mu_approx, log_vars=1.0, mask=None):
 
 def kl_gaussian(mu_left, logvar_left,
                 mu_right=0., logvar_right=0.):
-    ''' KL-divergence between two gaussians.
+    """ KL-divergence between two gaussians.
     Useful for Variational AutoEncoders. Use this as an activation regularizer
     Parameters:
     -----------
@@ -211,7 +259,7 @@ def kl_gaussian(mu_left, logvar_left,
     origin implementation from:
     https://github.com/Philip-Bachman/ICML-2015/blob/master/LogPDFs.py
     Copyright (c) Philip Bachman
-    '''
+    """
     gauss_klds = 0.5 * (logvar_right - logvar_left +
             (T.exp(logvar_left) / T.exp(logvar_right)) +
             ((mu_left - mu_right)**2.0 / T.exp(logvar_right)) - 1.0)

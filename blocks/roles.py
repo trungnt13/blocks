@@ -42,7 +42,7 @@ def add_role(var, role):
     var.tag.roles = roles
 
 
-def has_roles(var, roles, match_all=False):
+def has_roles(var, roles, match_all=False, exact=False):
     r"""Test if a variable has given roles taking subroles into account.
 
     Parameters
@@ -54,11 +54,21 @@ def has_roles(var, roles, match_all=False):
         If ``True``, checks if the variable has all given roles.
         If ``False``, any of the roles is sufficient.
         ``False`` by default.
+    exact : bool, optional
+        If ``True``, use ``==`` for comparison to get exactly same roles.
+        If ``False``, use isinstance for comparison, hence, also match the
+        decesdant roles.
 
     """
+    if not hasattr(roles, '__iter__'):
+        roles = [roles]
     var_roles = getattr(var.tag, 'roles', [])
-    matches = (any(isinstance(var_role, role.__class__) for
-                   var_role in var_roles) for role in roles)
+    if not exact:
+        matches = (any(isinstance(var_role, role.__class__) for
+                       var_role in var_roles) for role in roles)
+    else:
+        matches = (any(var_role == role for
+                       var_role in var_roles) for role in roles)
     return all(matches) if match_all else any(matches)
 
 
@@ -72,6 +82,24 @@ class VariableRole(object):
                       self.__class__.__name__[:-4]).upper()
 
 
+# ===========================================================================
+# Role for computation
+# ===========================================================================
+class TrainingRole(VariableRole):
+    pass
+#: The variable is used for training mode (i.e enalbe dropout out, etc)
+TRAINING = TrainingRole()
+
+
+class DeployingRole(TrainingRole):
+    pass
+#: Override Training role
+DEPLOYING = DeployingRole()
+
+
+# ===========================================================================
+# Role for Variable
+# ===========================================================================
 class InputRole(VariableRole):
     pass
 

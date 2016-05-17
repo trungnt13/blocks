@@ -273,6 +273,48 @@ def subplot(*arg):
     return plt.subplot(*arg)
 
 
+def subplot2grid(shape, loc, colspan=1, rowspan=1):
+    from matplotlib import pyplot as plt
+    return plt.subplot2grid(shape, loc, colspan=colspan, rowspan=rowspan)
+
+
+def set_labels(ax, title=None, xlabel=None, ylabel=None):
+    if title is not None:
+        ax.set_title(title)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel)
+
+
+def plot_scatter(x, y, color=None, size=4.0, ax=None):
+    '''Plot the amplitude envelope of a waveform.
+    '''
+    from matplotlib import pyplot as plt
+
+    ax = ax if ax is not None else plt.gca()
+    if color is None:
+        ax.scatter(x, y, s=size)
+    else:
+        ax.scatter(x, y, color=color, s=size)
+
+    return ax
+
+
+def plot(x, y=None, ax=None, color='b', lw=1):
+    '''Plot the amplitude envelope of a waveform.
+    '''
+    from matplotlib import pyplot as plt
+
+    ax = ax if ax is not None else plt.gca()
+    if y is None:
+        ax.plot(x, c=color, lw=lw)
+    else:
+        ax.plot(x, y, c=color, lw=lw)
+
+    return ax
+
+
 def plot_waveplot(y, ax=None):
     '''Plot the amplitude envelope of a waveform.
     '''
@@ -281,6 +323,18 @@ def plot_waveplot(y, ax=None):
     ax = ax if ax is not None else plt.gca()
     ax.plot(y)
 
+    return ax
+
+
+def plot_indices(idx, x=None, ax=None, alpha=0.3, ymin=0., ymax=1.):
+    from matplotlib import pyplot as plt
+
+    ax = ax if ax is not None else plt.gca()
+
+    x = range(idx.shape[0]) if x is None else x
+    for i, j in zip(idx, x):
+        if i: ax.axvline(x=j, ymin=ymin, ymax=ymax,
+                         color='r', linewidth=1, alpha=alpha)
     return ax
 
 
@@ -425,8 +479,8 @@ def plot_images_old(x, fig=None, titles=None, show=False):
         if not isinstance(titles, (tuple, list)):
             titles = [titles]
         if len(titles) != x.shape[0]:
-            raise ValueError('Titles must have the same length with \
-                the number of images!')
+            raise ValueError('Titles must have the same length with'
+                             'the number of images!')
 
     for i in range(ncols):
         for j in range(nrows):
@@ -693,8 +747,10 @@ def plot_hinton(matrix, max_weight=None, ax=None):
 # ===========================================================================
 # Helper methods
 # ===========================================================================
-def plot_show(block=False):
+def plot_show(block=False, tight_layout=False):
     from matplotlib import pyplot as plt
+    if tight_layout:
+        plt.tight_layout()
     plt.show(block=block)
     if not block: # manually block
         raw_input('<enter> to close all plots')
@@ -706,10 +762,12 @@ def plot_close():
     plt.close('all')
 
 
-def plot_save(path, figs=None, dpi=300):
+def plot_save(path, figs=None, dpi=300, tight_plot=False):
     try:
         from matplotlib.backends.backend_pdf import PdfPages
         import matplotlib.pyplot as plt
+        if tight_plot:
+            plt.tight_layout()
         pp = PdfPages(path)
         if figs is None:
             figs = [plt.figure(n) for n in plt.get_fignums()]

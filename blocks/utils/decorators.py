@@ -312,6 +312,9 @@ def autoattr(*args, **kwargs):
 # Auto store all arguments when init class
 # ===========================================================================
 def autoinit(func):
+    """ For checking what arguments have been assigned to the object:
+    `_arguments`
+    """
     if not inspect.isfunction(func):
         raise ValueError("Only accept function as input argument "
                          "(autoinit without any parameters")
@@ -319,22 +322,31 @@ def autoinit(func):
 
     @wraps(func)
     def wrapper(self, *args, **kwargs):
+        assigned_arguments = {}
         # handle default values
         if defaults is not None:
             for attr, val in zip(reversed(attrs), reversed(defaults)):
                 setattr(self, attr, val)
+                assigned_arguments[attr] = val
         # handle positional arguments (excluded self)
         positional_attrs = attrs[1:]
         for attr, val in zip(positional_attrs, args):
             setattr(self, attr, val)
+            assigned_arguments[attr] = val
         # handle varargs
         if varargs:
             remaining_args = args[len(positional_attrs):]
             setattr(self, varargs, remaining_args)
+            assigned_arguments[varargs] = remaining_args
         # handle varkw
         if kwargs:
             for attr, val in kwargs.iteritems():
-                setattr(self, attr, val)
+                try:
+                    setattr(self, attr, val)
+                    assigned_arguments[attr] = val
+                except: # ignore already predifined attr
+                    pass
+        setattr(self, '_arguments', assigned_arguments)
         return func(self, *args, **kwargs)
     return wrapper
 

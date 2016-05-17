@@ -11,6 +11,24 @@ def add_annotation(var, annotation):
         var.tag.annotations = annotations + [annotation]
 
 
+def add_shape(var, shape):
+    if not isinstance(shape, (tuple, list)):
+        shape = (shape,)
+    if len(shape) != var.ndim:
+        raise ValueError('Variable has ndim={} but given shape has ndim={}'
+                         '.'.format(var.ndim, len(shape)))
+    old_shape = getattr(var.tag, 'shape', var.shape)
+    new_shape = []
+    for i in shape:
+        if isinstance(i, (tuple, list)):
+            new_shape.append(old_shape[int(i[0])])
+        elif i is not None:
+            new_shape.append(int(i))
+        else:
+            new_shape.append(i)
+    var.tag.shape = tuple(new_shape)
+
+
 class Annotation(object):
     """Annotations on Theano variables in a graph.
 
