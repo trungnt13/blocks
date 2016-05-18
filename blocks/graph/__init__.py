@@ -153,6 +153,17 @@ class ComputationGraph(object):
                         variables.extend(new_avs)
                         updates = dict_union(updates, annotation.updates)
 
+        # If shared_variables is assigned default_update (cloned), we cannot eval()
+        # it to get the real numpy array value, hence, try to trace back
+        # original shared variable
+        def shared_variable_filter(var):
+            if is_shared_variable(var) and hasattr(var, 'default_update'):
+                for annotation in var.tag.annotations:
+                    if hasattr(annotation, var.name) and \
+                       is_shared_variable(getattr(annotation, var.name)):
+                        return getattr(annotation, var.name)
+            return var
+        variables = map(shared_variable_filter, variables)
         self.variables = variables
         self.updates = updates
 

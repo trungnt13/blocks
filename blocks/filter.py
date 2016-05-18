@@ -102,6 +102,11 @@ class VariableFilter(object):
     def __init__(self, roles=None, bricks=None, each_role=False, name=None,
                  name_regex=None, theano_name=None, theano_name_regex=None,
                  applications=None):
+        if roles is not None and not isinstance(roles, (tuple, list)):
+            roles = [roles]
+        if bricks is not None and not isinstance(bricks, (tuple, list)):
+            bricks = [bricks]
+
         if bricks is not None and not all(
             isinstance(brick, Brick) or issubclass(brick, Brick)
                 for brick in bricks):
@@ -111,6 +116,7 @@ class VariableFilter(object):
                 for application in applications):
             raise ValueError('`applications` should be a list of '
                              'BoundApplications')
+
         self.roles = roles
         self.bricks = bricks
         self.each_role = each_role

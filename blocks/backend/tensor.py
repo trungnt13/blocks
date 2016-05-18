@@ -373,6 +373,10 @@ def abs(x):
     return T.abs_(x)
 
 
+def inv(x):
+    return T.inv(x)
+
+
 def sqrt(x):
     x = T.clip(x, 0., np.inf)
     return T.sqrt(x)

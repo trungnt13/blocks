@@ -267,7 +267,7 @@ BATCH_NORM_MINIBATCH_ESTIMATE = BatchNormMinibatchEstimateRole()
 class BatchNormScaleParameterRole(ParameterRole):
     pass
 
-#: role given to the scale parameter, referred to as "scale" in the
+#: role given to the scale parameter, referred to as "scale" (or "gamma") in the
 # batch normalization manuscript, applied after normalizing.
 BATCH_NORM_SCALE_PARAMETER = BatchNormScaleParameterRole()
 
