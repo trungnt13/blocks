@@ -59,7 +59,7 @@ if on_gpu():
 # ===========================================================================
 # VARIABLE MANIPULATION
 # ===========================================================================
-def variable(value, dtype=FLOATX, name=None, broadcastable=None, target='dev0'):
+def variable(value, dtype=FLOATX, name=None, broadcastable=None, target=None):
     '''Instantiate a tensor variable.
     '''
     value = np.asarray(value, dtype=dtype)
@@ -274,8 +274,8 @@ def dot(x, y):
     return T.dot(x, y)
 
 
-def transpose(x):
-    return T.transpose(x)
+def transpose(x, axes=None):
+    return T.transpose(x, axes=axes)
 
 
 def gather(reference, indices):

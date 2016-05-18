@@ -78,14 +78,6 @@ def auto_config():
     elif floatX == 'float64':
         epsilon = 10e-12
 
-    sys.stderr.write('[Auto-Config] Device : %s\n' % device)
-    sys.stderr.write('[Auto-Config] Backend: %s\n' % backend)
-    sys.stderr.write('[Auto-Config] Optimizer: %s\n' % optimizer)
-    sys.stderr.write('[Auto-Config] FloatX : %s\n' % floatX)
-    sys.stderr.write('[Auto-Config] Epsilon: %s\n' % epsilon)
-    sys.stderr.write('[Auto-Config] CNMEM  : %s\n' % cnmem)
-    sys.stderr.write('[Auto-Config] SEED  : %s\n' % seed)
-
     # ==================== create theano flags ==================== #
     if backend == 'theano':
         if device == 'cpu':
@@ -117,11 +109,19 @@ def auto_config():
     else:
         raise ValueError('Unsupport backend: ' + backend)
 
+    sys.stderr.write('[Auto-Config] Device : %s\n' % device)
+    sys.stderr.write('[Auto-Config] Backend: %s\n' % backend)
+    sys.stderr.write('[Auto-Config] Optimizer: %s\n' % optimizer)
+    sys.stderr.write('[Auto-Config] FloatX : %s\n' % floatX)
+    sys.stderr.write('[Auto-Config] Epsilon: %s\n' % epsilon)
+    sys.stderr.write('[Auto-Config] CNMEM  : %s\n' % cnmem)
+    sys.stderr.write('[Auto-Config] SEED  : %s\n' % seed)
+
     class AttributeDict(dict):
         __getattr__ = dict.__getitem__
         __setattr__ = dict.__setitem__
     config = AttributeDict()
-    config.update({'floatX': floatX, 'epsilon': epsilon,
+    config.update({'device':device, 'floatX': floatX, 'epsilon': epsilon,
                    'backend': backend, 'seed': seed})
     return config
 

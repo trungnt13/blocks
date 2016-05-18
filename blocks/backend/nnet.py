@@ -6,6 +6,10 @@ import theano
 from theano import tensor as T
 from theano.tensor.signal import pool
 from theano.tensor.nnet import conv3d2d
+try:
+    from theano.tensor.nnet.nnet import softsign as T_softsign
+except ImportError:
+    from theano.sandbox.softsign import softsign as T_softsign
 
 from blocks.backend import tensor
 from blocks import autoconfig
@@ -13,9 +17,6 @@ from blocks import autoconfig
 
 FLOATX = autoconfig.floatX
 EPSILON = autoconfig.epsilon
-
-if tensor.on_gpu():
-    from theano.sandbox.cuda import dnn
 
 
 # ===========================================================================
@@ -38,6 +39,10 @@ def softmax(x):
 
 def softplus(x):
     return T.nnet.softplus(x)
+
+
+def softsign(x):
+    return T_softsign(x)
 
 
 def linear(x):
@@ -113,176 +118,94 @@ def correntropy_regularize(x, sigma=1.):
 # CONVOLUTIONS
 # ===========================================================================
 def conv2d(x, kernel, strides=(1, 1),
-           border_mode='valid', dim_ordering='th',
-           image_shape=None, filter_shape=None):
+           border_mode='valid', image_shape=None, filter_shape=None):
     '''
-    Run on cuDNN if available.
     border_mode: string, "same" or "valid".
+    dim_ordering : th (defaults)
+        TH input shape: (samples, input_depth, rows, cols)
+        TH kernel shape: (depth, input_depth, rows, cols)
     '''
-    if dim_ordering not in {'th', 'tf'}:
-        raise Exception('Unknown dim_ordering ' + str(dim_ordering))
-
-    if dim_ordering == 'tf':
-        # TF uses the last dimension as channel dimension,
-        # instead of the 2nd one.
-        # TH input shape: (samples, input_depth, rows, cols)
-        # TH kernel shape: (depth, input_depth, rows, cols)
-        # TF input shape: (samples, rows, cols, input_depth)
-        # TF kernel shape: (rows, cols, input_depth, depth)
-        x = x.dimshuffle((0, 3, 1, 2))
-        kernel = kernel.dimshuffle((3, 2, 0, 1))
-        if image_shape:
-            image_shape = (image_shape[0], image_shape[3],
-                           image_shape[1], image_shape[2])
-        if filter_shape:
-            filter_shape = (filter_shape[3], filter_shape[2],
-                            filter_shape[0], filter_shape[1])
-
-    if tensor.on_gpu() and dnn.dnn_available():
-        if border_mode == 'same':
-            np_kernel = kernel.eval()
-            # mode same and even filter
-            if len([s for s in np_kernel.shape[2:] if s % 2 == 0]) > 0.:
-                assert strides[0] <= np_kernel.shape[2], \
-                    'strides should be smaller than the convolution window.'
-                assert strides[1] <= np_kernel.shape[3], \
-                    'strides should be smaller than the convolution window.'
-                conv_out = dnn.dnn_conv(img=x,
-                                        kerns=kernel,
-                                        border_mode='full')
-                shift_x = (np_kernel.shape[2] - strides[0]) // 2
-                shift_y = (np_kernel.shape[3] - strides[1]) // 2
-                expected_width = (x.shape[2] + strides[0] - 1) // strides[0]
-                expected_height = (x.shape[3] + strides[1] - 1) // strides[1]
-                conv_out = conv_out[:, :,
-                                    shift_x: shift_x + expected_width,
-                                    shift_y: shift_y + expected_height]
-            else: # same mode and odd filter
-                border_mode = tuple(s // 2 for s in np_kernel.shape[2:])
-                # only use float32 for dnn.dnn_conv
-                conv_out = dnn.dnn_conv(img=x.astype('float32'),
-                                        kerns=kernel.astype('float32'),
-                                        border_mode=border_mode,
-                                        subsample=strides).astype(x.dtype)
-        else:
-            conv_out = dnn.dnn_conv(img=x.astype('float32'),
-                                    kerns=kernel.astype('float32'),
-                                    border_mode=border_mode,
-                                    subsample=strides).astype(x.dtype)
+    if border_mode == 'same':
+        th_border_mode = 'half'
+        np_kernel = kernel.eval()
+    elif border_mode == 'valid':
+        th_border_mode = 'valid'
+    elif border_mode == 'full':
+        th_border_mode = 'full'
+    elif isinstance(border_mode, (tuple, list)):
+        th_border_mode = border_mode
     else:
-        if border_mode == 'same' or border_mode == 'full':
-            th_border_mode = 'full'
-            np_kernel = kernel.eval()
-            assert strides[0] <= np_kernel.shape[2], 'strides should be smaller than the convolution window.'
-            assert strides[1] <= np_kernel.shape[3], 'strides should be smaller than the convolution window.'
-        elif border_mode == 'valid':
-            th_border_mode = 'valid'
-        elif isinstance(border_mode, (tuple, list)):
-            th_border_mode = border_mode
-        else:
-            raise Exception('Border mode not supported: ' + str(border_mode))
+        raise Exception('Border mode not supported: ' + str(border_mode))
 
-        conv_out = T.nnet.conv2d(x, kernel,
-                                 border_mode=th_border_mode,
-                                 subsample=strides,
-                                 input_shape=image_shape,
-                                 filter_shape=filter_shape)
-        if border_mode == 'same':
-            shift_x = (np_kernel.shape[2] - strides[0]) // 2
-            shift_y = (np_kernel.shape[3] - strides[1]) // 2
-            expected_width = (x.shape[2] + strides[0] - 1) // strides[0]
-            expected_height = (x.shape[3] + strides[1] - 1) // strides[1]
+    # Theano might not accept long type
+    def int_or_none(value):
+        try:
+            return int(value)
+        except TypeError:
+            return None
 
-            conv_out = conv_out[:, :,
-                                shift_x: shift_x + expected_width,
-                                shift_y: shift_y + expected_height]
-    if dim_ordering == 'tf':
-        conv_out = conv_out.dimshuffle((0, 2, 3, 1))
+    if image_shape is not None:
+        image_shape = tuple(int_or_none(v) for v in image_shape)
+
+    if filter_shape is not None:
+        filter_shape = tuple(int_or_none(v) for v in filter_shape)
+
+    conv_out = T.nnet.conv2d(x, kernel,
+                             border_mode=th_border_mode,
+                             subsample=strides,
+                             input_shape=image_shape,
+                             filter_shape=filter_shape)
+
+    if border_mode == 'same':
+        if np_kernel.shape[2] % 2 == 0:
+            conv_out = conv_out[:, :, :(x.shape[2] + strides[0] - 1) // strides[0], :]
+        if np_kernel.shape[3] % 2 == 0:
+            conv_out = conv_out[:, :, :, :(x.shape[3] + strides[1] - 1) // strides[1]]
+
     return conv_out
 
 
-def deconv2d(x, kernel, img_shape, filter_shape=None,
-    strides=(1, 1), border_mode='valid',
-    dim_ordering='th', flip_filters=True):
+def deconv2d(x, kernel, image_shape, filter_shape=None,
+    strides=(1, 1), border_mode='valid', flip_filters=True):
     '''
     Run on cuDNN if available.
     border_mode: string, "same" or "valid".
-    img_shape: (width, height) of original image
+    img_shape: (n, channels, width, height) of original image
+    filter_shape: (n_filter, channels, w, h) of original filters
     '''
-    if len(img_shape) != 4:
+    if len(image_shape) != 4:
         raise ValueError('img_shape for deconvolution operator must be 4-D')
-
-    if dim_ordering not in {'th', 'tf'}:
-        raise Exception('Unknown dim_ordering ' + str(dim_ordering))
-
-    if dim_ordering == 'tf':
-        # TF uses the last dimension as channel dimension,
-        # instead of the 2nd one.
-        # TH input shape: (samples, input_depth, rows, cols)
-        # TH kernel shape: (depth, input_depth, rows, cols)
-        # TF input shape: (samples, rows, cols, input_depth)
-        # TF kernel shape: (rows, cols, input_depth, depth)
-        x = x.dimshuffle((0, 3, 1, 2))
-        kernel = kernel.dimshuffle((3, 2, 0, 1))
-
     border_mode = 'half' if border_mode == 'same' else border_mode
     op = T.nnet.abstract_conv.AbstractConv2d_gradInputs(
-        imshp=[int(i) if isinstance(i, (long, float, int)) else None
-               for i in img_shape],
+        imshp=tuple([int(i) if isinstance(i, (long, float, int)) else None
+                     for i in image_shape]),
         kshp=filter_shape,
         subsample=strides, border_mode=border_mode,
         filter_flip=flip_filters)
-    # only support float32 ops
-    if FLOATX == 'float16':
-        conv_out = op(kernel.astype('float32'), x.astype('float32'),
-                      img_shape[2:]).astype('float16')
-    else:
-        conv_out = op(kernel, x, img_shape[2:])
-
-    if dim_ordering == 'tf':
-        conv_out = conv_out.dimshuffle((0, 2, 3, 1))
-    return conv_out
+    return op(kernel, x, image_shape[2:])
 
 
-def conv3d(x, kernel, strides=(1, 1, 1),
-           border_mode='valid', dim_ordering='th',
-           image_shape=None, filter_shape=None):
+def conv3d(x, kernel, strides=(1, 1, 1), border_mode='valid'):
     '''
     Run on cuDNN if available.
     border_mode: string, "same" or "valid".
-    conv_mode: string, "conv" or "cross".
+    dim_ordering : th (defaults)
+        TH input shape: (samples, input_depth, conv_dim1, conv_dim2, conv_dim3)
+        TH kernel shape: (out_depth, input_depth, kernel_dim1, kernel_dim2, kernel_dim3)
     '''
-    if dim_ordering not in {'th', 'tf'}:
-        raise Exception('Unknown dim_ordering ' + str(dim_ordering))
-
-    if dim_ordering == 'tf':
-        # TF uses the last dimension as channel dimension,
-        # instead of the 2nd one.
-        # TH input shape: (samples, input_depth, rows, cols, time)
-        # TH kernel shape: (depth, input_depth, rows, cols, time)
-        # TF input shape: (samples, rows, cols, time, input_depth)
-        # TF kernel shape: (rows, cols, time, input_depth, depth)
-        x = x.dimshuffle((0, 4, 1, 2, 3))
-        kernel = kernel.dimshuffle((4, 3, 0, 1, 2))
-        if image_shape:
-            image_shape = (image_shape[0], image_shape[4],
-                           image_shape[1], image_shape[2],
-                           image_shape[3])
-        if filter_shape:
-            filter_shape = (filter_shape[4], filter_shape[3],
-                            filter_shape[0], filter_shape[1],
-                            filter_shape[2])
-
-    if tensor.on_gpu() and dnn.dnn_available():
+    if tensor.on_gpu(): # Using DNN on GPU
+        from theano.sandbox.cuda import dnn
         if border_mode == 'same':
-            np_kernel = kernel.eval()
-            border_mode = tuple(s // 2 for s in np_kernel.shape[2:])
-        # only use float32 for dnn.dnn_conv3d
-        conv_out = dnn.dnn_conv3d(img=x.astype('float32'),
-                                  kerns=kernel.astype('float32'),
-                                  border_mode=border_mode,
-                                  subsample=strides).astype(x.dtype)
-    else:
+            border_mode = 'half'
+        conv_out = dnn.dnn_conv3d(img=x,
+                                kerns=kernel,
+                                subsample=strides,
+                                border_mode=border_mode,
+                                conv_mode='conv')
+    else: # Using default implementation of Theano
+        if border_mode not in {'same', 'valid', 'full'} and not isinstance(border_mode, (tuple, list)):
+            raise Exception('Invalid border mode: ' + str(border_mode))
+
         if border_mode == 'same':
             assert(strides == (1, 1, 1))
             pad_dim1 = (kernel.shape[2] - 1)
@@ -309,8 +232,6 @@ def conv3d(x, kernel, strides=(1, 1, 1),
         # support strides by manually slicing the output
         if strides != (1, 1, 1):
             conv_out = conv_out[:, :, ::strides[0], ::strides[1], ::strides[2]]
-    if dim_ordering == 'tf':
-        conv_out = conv_out.dimshuffle((0, 2, 3, 1))
     return conv_out
 
 
