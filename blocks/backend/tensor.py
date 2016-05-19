@@ -9,6 +9,7 @@
 from __future__ import division, absolute_import
 
 from collections import OrderedDict
+import math
 
 import numpy as np
 
@@ -20,6 +21,7 @@ from theano.tensor.shared_randomstreams import RandomStateSharedVariable
 from theano.tensor.sharedvar import SharedVariable
 
 from blocks import autoconfig
+from blocks.utils import as_tuple
 from blocks.graph import ComputationGraph
 from blocks.roles import add_role, has_roles, INPUT, TRAINING
 
@@ -27,13 +29,18 @@ FLOATX = autoconfig.floatX
 EPSILON = autoconfig.epsilon
 
 
+# remember original min and max
+_min = min
+_max = max
+
+
 # ===========================================================================
 # INTERNAL UTILS
 # ===========================================================================
 def on_gpu():
-    '''Return whether the session is set to
+    """Return whether the session is set to
     run on GPU or not (i.e. on CPU).
-    '''
+    """
     import theano.sandbox.cuda
 
     return 'gpu' in theano.config.device or \
@@ -43,10 +50,10 @@ def on_gpu():
     theano.sandbox.cuda.cuda_enabled
 
 if on_gpu():
-    '''Import cuDNN only if running on GPU:
+    """Import cuDNN only if running on GPU:
     not having Cuda installed should not
     prevent from running the present code.
-    '''
+    """
     # dummy initialization to remove the overhead of running libgpuarray backend
     T.zeros(0, dtype='int').eval()
     _ = theano.shared(value=np.asarray(1., dtype='float32'),
@@ -78,8 +85,8 @@ def add_shape(var, shape):
 # VARIABLE MANIPULATION
 # ===========================================================================
 def variable(value, dtype=FLOATX, name=None, broadcastable=None, target=None):
-    '''Instantiate a tensor variable.
-    '''
+    """Instantiate a tensor variable.
+    """
     value = np.asarray(value, dtype=dtype)
     if not on_gpu():
         target = None
@@ -96,14 +103,14 @@ def variable(value, dtype=FLOATX, name=None, broadcastable=None, target=None):
 
 
 def zeros_var(shape, dtype=FLOATX, name=None):
-    '''Instantiate an all-zeros variable.
-    '''
+    """Instantiate an all-zeros variable.
+    """
     return variable(np.zeros(shape), dtype, name)
 
 
 def ones_var(shape, dtype=FLOATX, name=None):
-    '''Instantiate an all-ones variable.
-    '''
+    """Instantiate an all-ones variable.
+    """
     return variable(np.ones(shape), dtype, name)
 
 
@@ -145,8 +152,8 @@ _PLACEHOLDER_ID = 0
 
 
 def placeholder(shape=None, ndim=None, dtype=FLOATX, name=None, for_training=False):
-    '''Instantiate an input data placeholder variable.
-    '''
+    """Instantiate an input data placeholder variable.
+    """
     if shape is None and ndim is None:
         raise Exception('Specify either a shape or ndim value.')
     if shape is not None:
@@ -190,8 +197,8 @@ def is_placeholder(variable):
 
 
 def eval(x):
-    '''Run a graph.
-    '''
+    """Run a graph.
+    """
     # just a hack to return placeholder shape when eval
     return x.eval()
 
@@ -200,7 +207,8 @@ def eval(x):
 # Shape operator
 # ===========================================================================
 def shape(x, none=True):
-    '''Return the shape of a tensor.
+    """Return the shape of a tensor, this function search for predefined shape
+    of `x` first, otherwise, return the theano shape
 
     Warning: type returned will be different for
     Theano backend (Theano tensor type) and TF backend (TF TensorShape).
@@ -210,7 +218,7 @@ def shape(x, none=True):
     none : bool
         allow None value, otherwise, all None (and -1) dimensions are converted to
         intermediate shape variable
-    '''
+    """
     shape = x.shape
     if hasattr(x, 'tag') and hasattr(x.tag, 'shape') and x.tag.shape is not None:
         shape = x.tag.shape
@@ -243,14 +251,14 @@ def addbroadcast(x, *axes):
 # Predefined data
 # ===========================================================================
 def zeros(shape, dtype=FLOATX, name=None):
-    '''Instantiate an all-zeros variable.
-    '''
+    """Instantiate an all-zeros variable.
+    """
     return T.zeros(shape=shape, dtype=dtype)
 
 
 def ones(shape, dtype=FLOATX, name=None):
-    '''Instantiate an all-ones variable.
-    '''
+    """Instantiate an all-ones variable.
+    """
     return T.ones(shape=shape, dtype=dtype)
 
 
@@ -263,10 +271,10 @@ def zeros_like(x):
 
 
 def count_params(x):
-    '''Return number of scalars in a tensor.
+    """Return number of scalars in a tensor.
 
     Return: numpy integer.
-    '''
+    """
     return np.prod(x.shape.eval())
 
 
@@ -287,30 +295,42 @@ def castX(x):
 # ===========================================================================
 def dot(x, y):
     # TODO: float16 overflow
-    if autoconfig.floatX == 'float16':
-        return T.dot(x.astype('float32'), y.astype('float32')).astype('float16')
-    return T.dot(x, y)
+    output = T.dot(x, y)
+    add_shape(output, shape(x)[:-1] + shape(y)[1:])
+    return output
 
 
 def transpose(x, axes=None):
-    return T.transpose(x, axes=axes)
+    output_shape = shape(x)
+    if axes is None:
+        output_shape = output_shape[::-1]
+    else:
+        output_shape = [output_shape[i] for i in axes]
+    x = T.transpose(x, axes=axes)
+    add_shape(x, tuple(output_shape))
+    return x
 
 
 def gather(reference, indices):
-    '''reference: a tensor.
+    """reference: a tensor.
     indices: an int tensor of indices.
 
     Return: a tensor of same type as reference.
-    '''
+    """
     return reference[indices]
 
 
 def diag(x):
-    return T.diag(x)
+    input_shape = shape(x)
+    x = T.diag(x)
+    add_shape(x, (_min(input_shape),))
+    return x
 
 
 def eye(n, dtype=FLOATX):
-    return T.eye(n, dtype=dtype)
+    x = T.eye(n, dtype=dtype)
+    add_shape(x, (n, n))
+    return x
 
 
 # ===========================================================================
@@ -329,8 +349,8 @@ def min(x, axis=None, keepdims=False):
 
 
 def sum(x, axis=None, keepdims=False):
-    '''Sum of the values in a tensor, alongside the specified axis.
-    '''
+    """Sum of the values in a tensor, alongside the specified axis.
+    """
     return T.sum(x, axis=axis, keepdims=keepdims)
 
 
@@ -339,8 +359,8 @@ def mul(x, y):
 
 
 def prod(x, axis=None, keepdims=False):
-    '''Multiply the values in a tensor, alongside the specified axis.
-    '''
+    """Multiply the values in a tensor, alongside the specified axis.
+    """
     return T.prod(x, axis=axis, keepdims=keepdims)
 
 
@@ -356,13 +376,17 @@ def std(x, axis=None, keepdims=False):
 
 
 def any(x, axis=None, keepdims=False):
-    '''Bitwise reduction (logical OR).
-    '''
+    """Bitwise reduction (logical OR).
+    """
     return T.any(x, axis=axis, keepdims=keepdims)
 
 
-def argmax(x, axis=-1):
-    return T.argmax(x, axis=axis, keepdims=False)
+def argmax(x, axis=-1, keepdims=False):
+    return T.argmax(x, axis=axis, keepdims=keepdims)
+
+
+def arange(start, stop=None, step=1, dtype=None):
+    return T.arange(start=start, stop=stop, step=step, dtype=dtype)
 
 
 def argsort(x, axis=-1):
@@ -384,15 +408,24 @@ def argmin(x, axis=-1):
 
 
 def square(x):
-    return T.sqr(x)
+    input_shape = shape(x)
+    x = T.sqr(x)
+    add_shape(x, input_shape)
+    return x
 
 
 def abs(x):
-    return T.abs_(x)
+    input_shape = shape(x)
+    x = T.abs_(x)
+    add_shape(x, input_shape)
+    return x
 
 
 def inv(x):
-    return T.inv(x)
+    input_shape = shape(x)
+    x = T.inv(x)
+    add_shape(x, input_shape)
+    return x
 
 
 def sqrt(x):
@@ -401,25 +434,40 @@ def sqrt(x):
 
 
 def exp(x):
-    return T.exp(x)
+    input_shape = shape(x)
+    x = T.exp(x)
+    add_shape(x, input_shape)
+    return x
 
 
 def log(x):
-    return T.log(x)
+    input_shape = shape(x)
+    x = T.log(x)
+    add_shape(x, input_shape)
+    return x
 
 
 def round(x):
-    return T.round(x)
+    input_shape = shape(x)
+    x = T.round(x)
+    add_shape(x, input_shape)
+    return x
 
 
 def pow(x, a):
-    return T.pow(x, a)
+    input_shape = shape(x)
+    x = T.pow(x, a)
+    add_shape(x, input_shape)
+    return x
 
 
 def clip(x, min_value, max_value):
     if max_value < min_value:
         max_value = min_value
-    return T.clip(x, min_value, max_value)
+    input_shape = shape(x)
+    x = T.clip(x, min_value, max_value)
+    add_shape(x, input_shape)
+    return x
 
 
 def maximum(x, y):
@@ -434,58 +482,68 @@ def minimum(x, y):
 # SHAPE OPERATIONS
 # ===========================================================================
 def reverse(x, axis=-1):
-    '''Apply [::-1] to appropriate axis'''
+    """Apply [::-1] to appropriate axis"""
     if axis < 0:
         axis += x.ndim
-    return x[(slice(None),) * axis + (slice(None, None, -1),)]
+    input_shape = shape(x)
+    x = x[(slice(None),) * axis + (slice(None, None, -1),)]
+    add_shape(x, input_shape)
+    return x
 
 
 def concatenate(tensors, axis=-1):
     return T.concatenate(tensors, axis=axis)
 
 
-def reshape(x, shape):
-    ''' x.shape = [25, 08, 12]
+def reshape(x, shape_):
+    """ x.shape = [25, 08, 12]
     reshape(shape=([1], [2], [0]))
     => x.shape = (08, 12, 25)
-    '''
-    shape = []
-    for i in shape:
+    """
+    input_shape = shape(x)
+    new_shape = []
+    for i in shape_:
         if i is None:
-            shape.append(-1)
+            new_shape.append(-1)
         elif isinstance(i, (list, tuple)):
-            shape.append(x.shape[i[0]])
+            new_shape.append(input_shape[i[0]])
         else:
-            shape.append(i)
-    return T.reshape(x, tuple(shape))
+            new_shape.append(i)
+    x = T.reshape(x, tuple(new_shape))
+    add_shape(x, new_shape)
+    return x
 
 
 def dimshuffle(x, pattern):
-    '''Transpose dimensions.
+    """Transpose dimensions.
 
     pattern should be a tuple or list of
     dimension indices, e.g. [0, 2, 1].
-    '''
+    """
     pattern = tuple(pattern)
-    return x.dimshuffle(pattern)
+    input_shape = shape(x)
+    new_shape = tuple([1 if i == 'x' else input_shape[i] for i in pattern])
+    x = x.dimshuffle(pattern)
+    add_shape(x, new_shape)
+    return x
 
 
 def repeat_elements(x, rep, axis):
-    '''Repeat the elements of a tensor along an axis, like np.repeat.
+    """Repeat the elements of a tensor along an axis, like np.repeat.
 
     If x has shape (s1, s2, s3) and axis=1, the output
     will have shape (s1, s2 * rep, s3).
-    '''
+    """
     return T.repeat(x, rep, axis=axis)
 
 
 def resize_images(X, height_factor, width_factor, dim_ordering):
-    '''Resize the images contained in a 4D tensor of shape
+    """Resize the images contained in a 4D tensor of shape
     - [batch, channels, height, width] (for 'th' dim_ordering)
     - [batch, height, width, channels] (for 'tf' dim_ordering)
     by a factor of (height_factor, width_factor). Both factors should be
     positive integers.
-    '''
+    """
     if dim_ordering == 'th':
         output = repeat_elements(X, height_factor, axis=2)
         output = repeat_elements(output, width_factor, axis=3)
@@ -499,11 +557,11 @@ def resize_images(X, height_factor, width_factor, dim_ordering):
 
 
 def repeat(x, n):
-    '''Repeat a 2D tensor.
+    """Repeat a 2D tensor.
 
     If x has shape (samples, dim) and n=2,
     the output will have shape (samples, 2, dim).
-    '''
+    """
     assert x.ndim == 2
     x = x.dimshuffle((0, 'x', 1))
     return T.extra_ops.repeat(x, n, axis=1)
@@ -514,12 +572,19 @@ def tile(x, n):
 
 
 def flatten(x, outdim=2):
-    return T.flatten(x, outdim)
+    input_shape = shape(x)
+    x = T.flatten(x, outdim)
+    if outdim <= 1:
+        input_shape = (None,) if None in input_shape else (int(np.prod(input_shape)),)
+    else:
+        input_shape = input_shape[:outdim - 1] + (int(np.prod(input_shape[outdim - 1:])),)
+    add_shape(x, input_shape)
+    return x
 
 
 def expand_dims(x, dim=-1):
-    '''Add a 1-sized dimension at index "dim".
-    '''
+    """Add a 1-sized dimension at index "dim".
+    """
     pattern = [i for i in range(x.type.ndim)]
     if dim < 0:
         if x.type.ndim == 0:
@@ -527,60 +592,57 @@ def expand_dims(x, dim=-1):
         else:
             dim = dim % x.type.ndim + 1
     pattern.insert(dim, 'x')
-    return x.dimshuffle(pattern)
+    return dimshuffle(x, pattern)
 
 
 def squeeze(x, axis):
-    '''Remove a 1-dimension from the tensor at index "axis".
-    '''
+    """Remove a 1-dimension from the tensor at index "axis".
+    """
+    input_shape = shape(x)
     x = T.addbroadcast(x, axis)
-    return T.squeeze(x)
+    x = T.squeeze(x)
+    if isinstance(input_shape, (tuple, list)):
+        add_shape(x, tuple([j for i, j in enumerate(input_shape) if i != axis]))
+    return x
 
 
-def temporal_padding(x, padding=1):
-    '''Pad the middle dimension of a 3D tensor
+def pad(x, axes=1, padding=1):
+    """Pad the all dimension given in `axes` of a N-D tensor
     with "padding" zeros left and right.
 
-    Appologies for the inane API, but Theano makes this
-    really hard.
-    '''
+    Example
+    -------
+    >>> X = [[1, 1, 1],
+             [1, 1, 1]]
+    >>> Y1 = pad(X, axes=1, padding=1)
+    >>> Y1 = [[0, 1, 1, 1, 0],
+              [0, 1, 1, 1, 0]]
+    >>> Y2 = pad(X, axes=(0, 1), padding=1)
+    >>> Y2 = [[0, 0, 0, 0, 0],
+              [0, 1, 1, 1, 0],
+              [0, 1, 1, 1, 0],
+              [0, 0, 0, 0, 0]]
+    """
+    if not isinstance(axes, (tuple, list)):
+        axes = (axes,)
+    axes = tuple([i % x.ndim for i in axes])
+    padding = as_tuple(padding, len(axes), int)
+
     input_shape = x.shape
-    output_shape = (input_shape[0],
-                    input_shape[1] + 2 * padding,
-                    input_shape[2])
+    output_shape = tuple([input_shape[i] if i not in axes
+                         else input_shape[i] + 2 * padding[axes.index(i)]
+                         for i in range(x.ndim)])
     output = T.zeros(output_shape)
-    return T.set_subtensor(output[:, padding:x.shape[1] + padding, :], x)
-
-
-def spatial_2d_padding(x, padding=(1, 1), dim_ordering='th'):
-    '''Pad the 2nd and 3rd dimensions of a 4D tensor
-    with "padding[0]" and "padding[1]" (resp.) zeros left and right.
-    '''
-    input_shape = x.shape
-    if dim_ordering == 'th':
-        output_shape = (input_shape[0],
-                        input_shape[1],
-                        input_shape[2] + 2 * padding[0],
-                        input_shape[3] + 2 * padding[1])
-        output = T.zeros(output_shape)
-        indices = (slice(None),
-                   slice(None),
-                   slice(padding[0], input_shape[2] + padding[0]),
-                   slice(padding[1], input_shape[3] + padding[1]))
-
-    elif dim_ordering == 'tf':
-        output_shape = (input_shape[0],
-                        input_shape[1] + 2 * padding[0],
-                        input_shape[2] + 2 * padding[1],
-                        input_shape[3])
-        output = T.zeros(output_shape)
-        indices = (slice(None),
-                   slice(padding[0], input_shape[1] + padding[0]),
-                   slice(padding[1], input_shape[2] + padding[1]),
-                   slice(None))
-    else:
-        raise Exception('Invalid dim_ordering: ' + dim_ordering)
-    return T.set_subtensor(output[indices], x)
+    indices = tuple([slice(None) if i not in axes
+                    else slice(padding[axes.index(i)], input_shape[i] + padding[axes.index(i)])
+                    for i in range(x.ndim)])
+    input_shape = shape(x)
+    x = T.set_subtensor(output[indices], x)
+    if isinstance(input_shape, (tuple, list)):
+        add_shape(x, tuple([input_shape[i] if i not in axes or input_shape[i] is None
+                            else input_shape[i] + 2 * padding[axes.index(i)]
+                            for i in range(x.ndim)]))
+    return x
 
 
 def stack(*x):
@@ -631,7 +693,7 @@ def function(inputs, outputs, updates=[]):
 
 
 def grad_clip(x, clip):
-    '''
+    """
     This clip the gradient of expression, used on forward pass but clip the
     gradient on backward pass
 
@@ -662,7 +724,7 @@ def grad_clip(x, clip):
     We register an opt in tensor/opt.py that remove the GradClip.
     So it have 0 cost in the forward and only do work in the grad.
 
-    '''
+    """
     return theano.gradient.grad_clip(x, -clip, clip)
 
 
@@ -831,7 +893,7 @@ def loop(step_fn, n_steps,
 
 def rnn(step_function, inputs, initial_states,
         go_backwards=False, mask=None, constants=None):
-    '''Iterates over the time dimension of a tensor.
+    """Iterates over the time dimension of a tensor.
     Parameters
     ----------
     inputs: tensor of temporal data of shape (samples, time, ...)
@@ -863,7 +925,7 @@ def rnn(step_function, inputs, initial_states,
             at time t for sample s.
         new_states: list of tensors, latest states returned by
             the step function, of shape (samples, ...).
-    '''
+    """
     ndim = inputs.ndim
     assert ndim >= 3, 'Input should be at least 3D.'
 
@@ -928,8 +990,8 @@ def rnn(step_function, inputs, initial_states,
 
 
 def switch(condition, then_expression, else_expression):
-    '''condition: scalar tensor.
-    '''
+    """condition: scalar tensor.
+    """
     return T.switch(condition, then_expression, else_expression)
 
 
@@ -967,7 +1029,7 @@ def le(a, b):
 
 
 def one_hot(x, nb_class):
-    ''' x: 1D-integer vector '''
+    """ x: 1D-integer vector """
     ret = T.zeros((x.shape[0], nb_class), dtype=FLOATX)
     ret = T.set_subtensor(ret[T.arange(x.shape[0]), x], 1)
     return ret
@@ -1031,7 +1093,7 @@ def confusion_matrix(y_pred, y_true, labels=None):
 
 
 def one_hot_max(x, axis=-1):
-    '''
+    """
     Example
     -------
     >>> Input: [[0.0, 0.0, 0.5],
@@ -1040,7 +1102,7 @@ def one_hot_max(x, axis=-1):
     >>> Output: [[0.0, 0.0, 1.0],
     >>>         [0.0, 1.0, 0.0],
     >>>         [1.0, 0.0, 0.0]]
-    '''
+    """
     return T.cast(
         T.eq(T.arange(x.shape[axis])[None, :],
              T.argmax(x, axis=axis, keepdims=True)),
@@ -1049,7 +1111,7 @@ def one_hot_max(x, axis=-1):
 
 
 def apply_mask(x, mask):
-    '''
+    """
     x : 3D tensor
     mask : 2D tensor
 
@@ -1058,5 +1120,5 @@ def apply_mask(x, mask):
     >>> Input: [128, 500, 120]
     >>> Mask:  [1, 1, 0]
     >>> Output: [128, 500, 0]
-    '''
+    """
     return T.mul(x, expand_dims(mask, -1))
