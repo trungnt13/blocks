@@ -5,7 +5,6 @@ from abc import abstractmethod
 import numpy as np
 
 from blocks import backend as K
-from blocks.graph import add_shape
 from blocks.roles import PARAMETER, WEIGHT, BIAS
 from blocks.utils.decorators import autoinit
 from blocks.utils import as_tuple
@@ -166,7 +165,7 @@ class BaseConv(NNOps):
             activation = conved + K.dimshuffle(self.b, ('x', 0) + ('x',) * self.n)
         activation = self.nonlinearity(activation)
         # set shape for output
-        add_shape(activation, self.output_shape)
+        K.add_shape(activation, self.output_shape)
         return activation
 
     def convolve(self, x):

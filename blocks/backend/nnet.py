@@ -14,7 +14,6 @@ except ImportError:
 from blocks.backend import tensor
 from blocks import autoconfig
 from blocks.utils import as_tuple
-from blocks.graph.annotations import add_shape
 
 
 FLOATX = autoconfig.floatX
@@ -356,7 +355,7 @@ def pool2d(x, pool_size, ignore_border=True,
                                          stride=strides[1],
                                          pad=pad[1],
                                          ignore_border=ignore_border)
-    add_shape(pool_out, tuple(output_shape))
+    tensor.add_shape(pool_out, tuple(output_shape))
     return pool_out
 
 
@@ -431,5 +430,5 @@ def pool3d(x, pool_size, ignore_border=True,
                                          stride=strides[2],
                                          pad=pad[2],
                                          ignore_border=ignore_border)
-    add_shape(pool_out, tuple(output_shape))
+    tensor.add_shape(pool_out, tuple(output_shape))
     return pool_out

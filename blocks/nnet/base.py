@@ -8,7 +8,7 @@ from six.moves import zip, range
 import numpy as np
 
 from blocks import backend as K
-from blocks.graph import add_annotation, add_shape, Annotation
+from blocks.graph import add_annotation, Annotation
 from blocks.roles import (add_role, has_roles, PARAMETER, VariableRole,
                           WEIGHT, BIAS, OUTPUT,
                           BATCH_NORM_SHIFT_PARAMETER,
@@ -300,7 +300,7 @@ class Dense(NNOps):
             activation = activation + self.b
         activation = self.nonlinearity(activation)
         # set shape for output
-        add_shape(activation, input_shape[:-1] + (self.num_units,))
+        K.add_shape(activation, input_shape[:-1] + (self.num_units,))
         return activation
 
 
@@ -506,5 +506,5 @@ class BatchNorm(NNOps):
         # normalize
         normalized = (x - mean) * (gamma * inv_std) + beta
         # set shape for output
-        add_shape(normalized, input_shape)
+        K.add_shape(normalized, input_shape)
         return normalized
