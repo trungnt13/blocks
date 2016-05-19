@@ -163,8 +163,7 @@ class ComputationGraph(object):
                        is_shared_variable(getattr(annotation, var.name)):
                         return getattr(annotation, var.name)
             return var
-        variables = map(shared_variable_filter, variables)
-        self.variables = variables
+        self.variables = map(shared_variable_filter, variables)
         self.updates = updates
 
     def dict_of_inputs(self):

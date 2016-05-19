@@ -13,6 +13,8 @@ except ImportError:
 
 from blocks.backend import tensor
 from blocks import autoconfig
+from blocks.utils import as_tuple
+from blocks.graph.annotations import add_shape
 
 
 FLOATX = autoconfig.floatX
@@ -20,8 +22,70 @@ EPSILON = autoconfig.epsilon
 
 
 # ===========================================================================
+# Helper
+# ===========================================================================
+def pool_output_length(input_length, pool_size, stride, pad, ignore_border):
+    """ Copyright (c) 2014-2015 Lasagne contributors
+    All rights reserved.
+    LICENSE: https://github.com/Lasagne/Lasagne/blob/master/LICENSE
+
+    Compute the output length of a pooling operator
+    along a single dimension.
+
+    Parameters
+    ----------
+    input_length : integer
+        The length of the input in the pooling dimension
+    pool_size : integer
+        The length of the pooling region
+    stride : integer
+        The stride between successive pooling regions
+    pad : integer
+        The number of elements to be added to the input on each side.
+    ignore_border: bool
+        If ``True``, partial pooling regions will be ignored.
+        Must be ``True`` if ``pad != 0``.
+
+    Returns
+    -------
+    output_length
+        * None if either input is None.
+        * Computed length of the pooling operator otherwise.
+
+    Notes
+    -----
+    When ``ignore_border == True``, this is given by the number of full
+    pooling regions that fit in the padded input length,
+    divided by the stride (rounding down).
+
+    If ``ignore_border == False``, a single partial pooling region is
+    appended if at least one input element would be left uncovered otherwise.
+    """
+    if input_length is None or pool_size is None:
+        return None
+
+    if ignore_border:
+        output_length = input_length + 2 * pad - pool_size + 1
+        output_length = (output_length + stride - 1) // stride
+
+    # output length calculation taken from:
+    # https://github.com/Theano/Theano/blob/master/theano/tensor/signal/downsample.py
+    else:
+        assert pad == 0
+
+        if stride >= pool_size:
+            output_length = (input_length + stride - 1) // stride
+        else:
+            output_length = max(
+                0, (input_length - pool_size + stride - 1) // stride) + 1
+
+    return output_length
+
+# ===========================================================================
 # NN OPERATIONS
 # ===========================================================================
+
+
 def relu(x, alpha=0., max_value=None):
     assert hasattr(T.nnet, 'relu'), ('It looks like like your version of '
                                      'Theano is out of date. '
@@ -92,10 +156,10 @@ def l1_regularize(x):
 
 
 def jacobian_regularize(hidden, params):
-    ''' Computes the jacobian of the hidden layer with respect to
+    """ Computes the jacobian of the hidden layer with respect to
     the input, reshapes are necessary for broadcasting the
     element-wise product on the right axis
-    '''
+    """
     hidden = hidden * (1 - hidden)
     L = tensor.expand_dims(hidden, 1) * tensor.expand_dims(params, 0)
     # Compute the jacobian and average over the number of samples/minibatch
@@ -104,13 +168,13 @@ def jacobian_regularize(hidden, params):
 
 
 def correntropy_regularize(x, sigma=1.):
-    '''
+    """
     Note
     ----
     origin implementation from seya:
     https://github.com/EderSantana/seya/blob/master/seya/regularizers.py
     Copyright (c) EderSantana
-    '''
+    """
     return -T.sum(T.mean(T.exp(x**2 / sigma), axis=0)) / T.sqrt(2 * np.pi * sigma)
 
 
@@ -119,12 +183,12 @@ def correntropy_regularize(x, sigma=1.):
 # ===========================================================================
 def conv2d(x, kernel, strides=(1, 1),
            border_mode='valid', image_shape=None, filter_shape=None):
-    '''
+    """
     border_mode: string, "same" or "valid".
     dim_ordering : th (defaults)
         TH input shape: (samples, input_depth, rows, cols)
         TH kernel shape: (depth, input_depth, rows, cols)
-    '''
+    """
     if border_mode == 'same':
         th_border_mode = 'half'
         np_kernel = kernel.eval()
@@ -167,12 +231,12 @@ def conv2d(x, kernel, strides=(1, 1),
 
 def deconv2d(x, kernel, image_shape, filter_shape=None,
     strides=(1, 1), border_mode='valid', flip_filters=True):
-    '''
+    """
     Run on cuDNN if available.
     border_mode: string, "same" or "valid".
     img_shape: (n, channels, width, height) of original image
     filter_shape: (n_filter, channels, w, h) of original filters
-    '''
+    """
     if len(image_shape) != 4:
         raise ValueError('img_shape for deconvolution operator must be 4-D')
     border_mode = 'half' if border_mode == 'same' else border_mode
@@ -185,14 +249,15 @@ def deconv2d(x, kernel, image_shape, filter_shape=None,
     return op(kernel, x, image_shape[2:])
 
 
-def conv3d(x, kernel, strides=(1, 1, 1), border_mode='valid'):
-    '''
+def conv3d(x, kernel, strides=(1, 1, 1), border_mode='valid',
+           image_shape=None, filter_shape=None):
+    """
     Run on cuDNN if available.
     border_mode: string, "same" or "valid".
     dim_ordering : th (defaults)
         TH input shape: (samples, input_depth, conv_dim1, conv_dim2, conv_dim3)
         TH kernel shape: (out_depth, input_depth, kernel_dim1, kernel_dim2, kernel_dim3)
-    '''
+    """
     if tensor.on_gpu(): # Using DNN on GPU
         from theano.sandbox.cuda import dnn
         if border_mode == 'same':
@@ -226,7 +291,9 @@ def conv3d(x, kernel, strides=(1, 1, 1), border_mode='valid'):
         border_mode_3d = (border_mode, border_mode, border_mode)
         conv_out = conv3d2d.conv3d(signals=x.dimshuffle(0, 2, 1, 3, 4),
                                    filters=kernel.dimshuffle(0, 2, 1, 3, 4),
-                                   border_mode=border_mode_3d)
+                                   border_mode=border_mode_3d,
+                                   signals_shape=None,
+                                   filter_shape=None)
         conv_out = conv_out.dimshuffle(0, 2, 1, 3, 4)
 
         # support strides by manually slicing the output
@@ -235,84 +302,134 @@ def conv3d(x, kernel, strides=(1, 1, 1), border_mode='valid'):
     return conv_out
 
 
-def pool2d(x, pool_size, strides=(1, 1), border_mode='valid',
-           dim_ordering='th', pool_mode='max'):
-    # ====== dim ordering ====== #
-    if dim_ordering not in {'th', 'tf'}:
-        raise Exception('Unknown dim_ordering ' + str(dim_ordering))
-    if dim_ordering == 'tf':
-        x = x.dimshuffle((0, 3, 1, 2))
-    # ====== border mode ====== #
-    if border_mode == 'same':
-        w_pad = pool_size[0] - 2 if pool_size[0] % 2 == 1 else pool_size[0] - 1
-        h_pad = pool_size[1] - 2 if pool_size[1] % 2 == 1 else pool_size[1] - 1
-        padding = (w_pad, h_pad)
-    elif border_mode == 'valid':
-        padding = (0, 0)
-    elif isinstance(border_mode, (tuple, list)):
-        padding = tuple(border_mode)
+def pool2d(x, pool_size, ignore_border=True,
+           strides=(1, 1), pad=(0, 0), mode='max'):
+    """
+    Parameters
+    ----------
+    x : N-D theano tensor of input images
+        Input images. Max pooling will be done over the 2 last dimensions.
+    pool_size : tuple of length 2
+        Factor by which to downscale (vertical ds, horizontal ds).
+        (2,2) will halve the image in each dimension.
+    strides : tuple of two ints
+        Stride size, which is the number of shifts over rows/cols to get the
+        next pool region. If st is None, it is considered equal to ds
+        (no overlap on pooling regions).
+    ignore_border : bool (default None, will print a warning and set to False)
+        When True, (5,5) input with ds=(2,2) will generate a (2,2) output.
+        (3,3) otherwise.
+    padding : tuple of two ints
+        (pad_h, pad_w), pad zeros to extend beyond four borders of the
+        images, pad_h is the size of the top and bottom margins, and
+        pad_w is the size of the left and right margins.
+    mode : {'max', 'sum', 'average_inc_pad', 'average_exc_pad'}
+        Operation executed on each window. `max` and `sum` always exclude
+        the padding in the computation. `average` gives you the choice to
+        include or exclude it.
+    """
+    pool_size = as_tuple(pool_size, 2, int)
+    strides = as_tuple(strides, 2, int)
+    pad = as_tuple(pad, 2, int)
+    # ====== On GPU: use CuDNN ====== #
+    if mode != 'sum' and tensor.on_gpu():
+        from theano.sandbox.cuda import dnn
+        if not ignore_border:
+            raise ValueError('CuDNN does not support ignore_border = False.')
+        pool_out = dnn.dnn_pool(x, ws=pool_size, stride=strides, mode=mode, pad=pad)
+    # ====== Use default Theano implementation ====== #
     else:
-        raise Exception('Invalid border mode: ' + str(border_mode))
-
-    # ====== pooling ====== #
-    if tensor.on_gpu() and dnn.dnn_available():
-        pool_out = dnn.dnn_pool(x, pool_size,
-                                stride=strides,
-                                mode=pool_mode,
-                                pad=padding)
-    else: # CPU veresion support by theano
         pool_out = pool.pool_2d(x, ds=pool_size, st=strides,
-                                ignore_border=True,
-                                padding=padding,
-                                mode=pool_mode)
-
-    if dim_ordering == 'tf':
-        pool_out = pool_out.dimshuffle((0, 2, 3, 1))
+                                ignore_border=ignore_border,
+                                padding=pad,
+                                mode=mode)
+    # ====== Estimate output shape ====== #
+    input_shape = tensor.shape(x)
+    output_shape = list(input_shape)  # copy / convert to mutable list
+    output_shape[2] = pool_output_length(input_shape[2],
+                                         pool_size=pool_size[0],
+                                         stride=strides[0],
+                                         pad=pad[0],
+                                         ignore_border=ignore_border)
+    output_shape[3] = pool_output_length(input_shape[3],
+                                         pool_size=pool_size[1],
+                                         stride=strides[1],
+                                         pad=pad[1],
+                                         ignore_border=ignore_border)
+    add_shape(pool_out, tuple(output_shape))
     return pool_out
 
 
-def pool3d(x, pool_size, strides=(1, 1, 1), border_mode='valid',
-           dim_ordering='th', pool_mode='max'):
-    # ====== dim ordering ====== #
-    if dim_ordering not in {'th', 'tf'}:
-        raise Exception('Unknown dim_ordering ' + str(dim_ordering))
-    if dim_ordering == 'tf':
-        x = x.dimshuffle((0, 4, 1, 2, 3))
-    # ====== border mode ====== #
-    if border_mode == 'same':
-        w_pad = pool_size[0] - 2 if pool_size[0] % 2 == 1 else pool_size[0] - 1
-        h_pad = pool_size[1] - 2 if pool_size[1] % 2 == 1 else pool_size[1] - 1
-        d_pad = pool_size[2] - 2 if pool_size[2] % 2 == 1 else pool_size[2] - 1
-        padding = (w_pad, h_pad, d_pad)
-    elif border_mode == 'valid':
-        padding = (0, 0, 0)
-    elif isinstance(border_mode, (tuple, list)):
-        padding = tuple(border_mode)
+def pool3d(x, pool_size, ignore_border=True,
+           strides=(1, 1, 1), pad=(0, 0, 0), mode='max'):
+    """
+    Parameters
+    ----------
+    x : N-D theano tensor of input images
+        Input images. Max pooling will be done over the 2 last dimensions.
+    pool_size : tuple of length 3
+        Factor by which to downscale (vertical ds, horizontal ds).
+        (2,2,2) will halve the image in each dimension.
+    strides : tuple of 3 ints
+        Stride size, which is the number of shifts over rows/cols to get the
+        next pool region. If st is None, it is considered equal to ds
+        (no overlap on pooling regions).
+    ignore_border : bool (default None, will print a warning and set to False)
+        When True, (5,5,5) input with ds=(2,2,2) will generate a (2,2,2) output.
+        (3,3,3) otherwise.
+    padding : tuple of 3 ints
+        (pad_h, pad_w, pad_l), pad zeros to extend beyond four borders of the
+        images, pad_h is the size of the top and bottom margins, and
+        pad_w is the size of the left and right margins.
+    mode : {'max', 'sum', 'average_inc_pad', 'average_exc_pad'}
+        Operation executed on each window. `max` and `sum` always exclude
+        the padding in the computation. `average` gives you the choice to
+        include or exclude it.
+    """
+    pool_size = as_tuple(pool_size, 3, int)
+    strides = as_tuple(strides, 3, int)
+    pad = as_tuple(pad, 3, int)
+    # ====== On GPU: use CuDNN ====== #
+    if mode != 'sum' and tensor.on_gpu():
+        from theano.sandbox.cuda import dnn
+        if not ignore_border:
+            raise ValueError('CuDNN does not support ignore_border = False.')
+        pool_out = dnn.dnn_pool(x, ws=pool_size, stride=strides, mode=mode, pad=pad)
+    # ====== Use default Theano implementation ====== #
     else:
-        raise Exception('Invalid border mode: ' + str(border_mode))
-    # ====== pooling ====== #
-    if tensor.on_gpu() and dnn.dnn_available():
-        pool_out = dnn.dnn_pool(x, pool_size,
-                                stride=strides,
-                                mode=pool_mode,
-                                pad=padding)
-    else:
-        padding = padding[:2]
-        # pooling over conv_dim2, conv_dim1 (last two channels)
-        output = pool.pool_2d(input=x.dimshuffle(0, 1, 4, 3, 2),
+        if len(set(pad)) > 1:
+            raise ValueError('Only support same padding on CPU.')
+        padding = (pad[0], pad[0])
+        output = pool.pool_2d(input=tensor.dimshuffle(x, (0, 1, 4, 3, 2)),
                               ds=(pool_size[1], pool_size[0]),
                               st=(strides[1], strides[0]),
-                              ignore_border=True,
+                              ignore_border=ignore_border,
                               padding=padding,
-                              mode=pool_mode)
+                              mode=mode)
         # pooling over conv_dim3
-        pool_out = pool.pool_2d(input=output.dimshuffle(0, 1, 4, 3, 2),
+        pool_out = pool.pool_2d(input=tensor.dimshuffle(output, (0, 1, 4, 3, 2)),
                                 ds=(1, pool_size[2]),
                                 st=(1, strides[2]),
-                                ignore_border=True,
+                                ignore_border=ignore_border,
                                 padding=padding,
-                                mode=pool_mode)
-    # ====== output ====== #
-    if dim_ordering == 'tf':
-        pool_out = pool_out.dimshuffle((0, 2, 3, 4, 1))
+                                mode=mode)
+    # ====== Estimate output shape ====== #
+    input_shape = tensor.shape(x)
+    output_shape = list(input_shape)  # copy / convert to mutable list
+    output_shape[2] = pool_output_length(input_shape[2],
+                                         pool_size=pool_size[0],
+                                         stride=strides[0],
+                                         pad=pad[0],
+                                         ignore_border=ignore_border)
+    output_shape[3] = pool_output_length(input_shape[3],
+                                         pool_size=pool_size[1],
+                                         stride=strides[1],
+                                         pad=pad[1],
+                                         ignore_border=ignore_border)
+    output_shape[4] = pool_output_length(input_shape[4],
+                                         pool_size=pool_size[2],
+                                         stride=strides[2],
+                                         pad=pad[2],
+                                         ignore_border=ignore_border)
+    add_shape(pool_out, tuple(output_shape))
     return pool_out

@@ -521,5 +521,7 @@ class Conv3D(BaseConv):
         # by default we assume 'cross', consistent with corrmm.
         conved = K.conv3d(x, kernel=self.W,
                           strides=self.stride,
-                          border_mode=self.pad)
+                          border_mode=self.pad,
+                          image_shape=self.input_shape,
+                          filter_shape=K.shape(self.W))
         return conved

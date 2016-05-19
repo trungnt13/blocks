@@ -615,6 +615,9 @@ def as_tuple(x, N, t=None):
     ----
     This function is adpated from Lasagne
     Original work Copyright (c) 2014-2015 lasagne contributors
+    All rights reserved.
+
+    LICENSE: https://github.com/Lasagne/Lasagne/blob/master/LICENSE
     """
     try:
         X = tuple(x)
