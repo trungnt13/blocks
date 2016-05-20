@@ -109,7 +109,7 @@ class Task(object):
 
 class MainLoop(object):
 
-    """Task"""
+    """ MainLoop """
 
     def __init__(self, batch_size=256, dataset=None, shuffle=True, name=None):
         super(MainLoop, self).__init__()
@@ -119,7 +119,11 @@ class MainLoop(object):
         self._subtask = {} # run 1 epoch after given frequence
         self._crosstask = {} # randomly run 1 iter given probability
 
-        self.set_shuffle(shuffle)
+        if shuffle:
+            self._rng = np.random.RandomState(RNG_GENERATOR.randint(10e8))
+        else:
+            self._rng = struct()
+            self._rng.randint = lambda *args, **kwargs: None
 
         if isinstance(dataset, str):
             dataset = Dataset(dataset)
@@ -147,13 +151,6 @@ class MainLoop(object):
 
     def __str__(self):
         return 'Task'
-
-    def set_shuffle(self, shuffle):
-        if shuffle:
-            self._rng = np.random.RandomState(RNG_GENERATOR.randint(10e8))
-        else:
-            self._rng = struct()
-            self._rng.randint = lambda *args, **kwargs: None
 
     def add_callback(self, *callback):
         for i in callback:
