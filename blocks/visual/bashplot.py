@@ -139,14 +139,13 @@ def read_numbers(numbers):
         for number in open(numbers):
             yield float(number.strip())
 
+
 # ===========================================================================
 # Main
 # ===========================================================================
-
-
 def print_hist(f, height=20.0, bincount=None, binwidth=None, pch="o",
     colour="default", title="", xlab=None, showSummary=False,
-    regular=False, return_str=False):
+    regular=False):
     ''' Plot histogram.
      1801|       oo
      1681|       oo
@@ -239,9 +238,7 @@ def print_hist(f, height=20.0, bincount=None, binwidth=None, pch="o",
     nlen = max(len(str(min_y)), len(str(max_y))) + 1
 
     if title:
-        splot += print_return_str(
-            box_text(title, max(len(hist) * 2, len(title)), nlen),
-            return_str=return_str)
+        splot += print_return_str(box_text(title, max(len(hist) * 2, len(title)), nlen))
     splot += print_return_str('')
 
     used_labs = set()
@@ -263,8 +260,7 @@ def print_hist(f, height=20.0, bincount=None, binwidth=None, pch="o",
         splot += print_return_str('')
     xs = hist.keys()
 
-    splot += print_return_str(" " * (nlen + 1) + "-" * len(xs),
-                              return_str=return_str)
+    splot += print_return_str(" " * (nlen + 1) + "-" * len(xs))
 
     if xlab:
         xlen = len(str(float((max_y) / height) + max_y))
@@ -275,11 +271,9 @@ def print_hist(f, height=20.0, bincount=None, binwidth=None, pch="o",
                 if x % 2 != 0:
                     pass
                 elif i < len(num):
-                    splot += print_return_str(num[i], end=' ',
-                                              return_str=return_str)
+                    splot += print_return_str(num[i], end=' ')
                 else:
-                    splot += print_return_str(" ", end=' ',
-                                            return_str=return_str)
+                    splot += print_return_str(" ", end=' ')
             splot += print_return_str('')
 
     center = max(map(len, map(str, [n, min_val, mean, max_val])))
@@ -288,8 +282,7 @@ def print_hist(f, height=20.0, bincount=None, binwidth=None, pch="o",
     if showSummary:
         splot += print_return_str('')
         splot += print_return_str("-" * (2 + center))
-        splot += print_return_str("|" + "Summary".center(center) + "|",
-                                  return_str=return_str)
+        splot += print_return_str("|" + "Summary".center(center) + "|")
         splot += print_return_str("-" * (2 + center))
         summary = "|" + ("observations: %d" % n).center(center) + "|\n"
         summary += "|" + ("min value: %f" % min_val).center(center) + "|\n"
@@ -303,7 +296,7 @@ def print_hist(f, height=20.0, bincount=None, binwidth=None, pch="o",
 
 def print_bar(f, height=20.0, bincount=None, binwidth=None, pch="o",
     colour="default", title="", xlab=None, showSummary=False,
-    regular=False, return_str=False):
+    regular=False):
     ''' Plot bar.
 
     Parameters
@@ -328,8 +321,6 @@ def print_bar(f, height=20.0, bincount=None, binwidth=None, pch="o",
         whether or not to display a summary
     regular : boolean
         whether or not to start y-labels at 0
-    return_str : boolean
-        return string represent the plot or print it out, default: False
 
     Example
     -------
@@ -421,8 +412,7 @@ def print_bar(f, height=20.0, bincount=None, binwidth=None, pch="o",
 
     if title:
         splot += print_return_str(
-            box_text(title, max(len(hist) * 2, len(title)), nlen),
-            return_str=return_str)
+            box_text(title, max(len(hist) * 2, len(title)), nlen))
     splot += print_return_str('')
 
     used_labs = set()
@@ -458,11 +448,9 @@ def print_bar(f, height=20.0, bincount=None, binwidth=None, pch="o",
                 if x % 2 != 0:
                     pass
                 elif i < len(num):
-                    splot += print_return_str(num[i], end=' ',
-                                              return_str=return_str)
+                    splot += print_return_str(num[i], end=' ')
                 else:
-                    splot += print_return_str(" ", end=' ',
-                                            return_str=return_str)
+                    splot += print_return_str(" ", end=' ')
             splot += print_return_str('')
 
     center = max(map(len, map(str, [n, min_val, mean, max_val])))
@@ -471,8 +459,7 @@ def print_bar(f, height=20.0, bincount=None, binwidth=None, pch="o",
     if showSummary:
         splot += print_return_str('')
         splot += print_return_str("-" * (2 + center))
-        splot += print_return_str("|" + "Summary".center(center) + "|",
-                                  return_str=return_str)
+        splot += print_return_str("|" + "Summary".center(center) + "|")
         splot += print_return_str("-" * (2 + center))
         summary = "|" + ("observations: %d" % n).center(center) + "|\n"
         summary += "|" + ("min value: %f" % min_val).center(center) + "|\n"
@@ -486,7 +473,7 @@ def print_bar(f, height=20.0, bincount=None, binwidth=None, pch="o",
 
 
 def print_scatter(xs, ys, size=None, pch='o',
-                colour='red', title=None, return_str=False):
+                colour='red', title=None):
     ''' Scatter plot.
     ----------------------
     |                 *   |
@@ -523,13 +510,10 @@ def print_scatter(xs, ys, size=None, pch='o',
         size = 13
 
     if title:
-        splot += print_return_str(
-            box_text(title, 2 * len(get_scale(xs, False, size)) + 1),
-            return_str=return_str)
+        splot += print_return_str(box_text(title, 2 * len(get_scale(xs, False, size)) + 1))
 
     # ====== Top line ====== #
-    splot += print_return_str(' ' + "-" * (len(get_scale(xs, False, size)) + 2),
-                              return_str=return_str)
+    splot += print_return_str(' ' + "-" * (len(get_scale(xs, False, size)) + 2))
     # ====== Main plot ====== #
     for y in get_scale(ys, True, size):
         splot += print_return_str("|", end=' ')
@@ -544,12 +528,11 @@ def print_scatter(xs, ys, size=None, pch='o',
             splot += printcolour(point, True, colour)
         splot += print_return_str(" |")
     # ====== Bottom line ====== #
-    splot += print_return_str(' ' + "-" * (len(get_scale(xs, False, size)) + 2),
-                              return_str=return_str)
+    splot += print_return_str(' ' + "-" * (len(get_scale(xs, False, size)) + 2))
     return splot
 
 
-def print_hinton(arr, max_arr=None, return_str=False):
+def print_hinton(arr, max_arr=None):
     ''' Print bar string, fast way to visual magnitude of value in terminal
 
     Example:

@@ -463,9 +463,10 @@ class functionable(object):
 
     Note
     ----
+    *All defaults arguments must be specified within the source code of function
+    (i.e. mean(x) must be converted to mean(x, axis=None, keepdims=False))
     This class does not support nested functions
     All the complex objects must be created in the function
-
     """
 
     def __init__(self, func, *args, **kwargs):

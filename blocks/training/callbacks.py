@@ -250,7 +250,7 @@ class ProgressMonitor(Callback):
             title = self._title % self.results
         else:
             title = self._title
-        self._prog.title = '%-8s:%2d:' % (self.task.name[:8], self.epoch) + title
+        self._prog.title = '%-8s,Epoch:%2d,' % (self.task.name[:8], self.epoch) + title
         iter_per_epoch = self.task.iter_per_epoch
         n = round(((self.iter % iter_per_epoch) / iter_per_epoch) * 100)
         self._prog.update(int(n))
@@ -262,8 +262,15 @@ class ProgressMonitor(Callback):
 
 class History(Callback):
 
-    ''' Record the executing history in following format
-    |Datatime; event_type; task; result; iter; epoch|
+    ''' Record the executing history in following format:
+        |Datatime; event_type; task; result; iter; epoch|
+    event_type : 6 events
+        * task_start
+        * task_end
+        * batch_start
+        * batch_end
+        * epoch_start
+        * epoch_end
     '''
     @staticmethod
     def time2date(timestamp):
@@ -301,6 +308,9 @@ class History(Callback):
         t = timeit.default_timer()
         self._history.append((t, 'batch_end', self.task.name,
                               self.results, self.iter, self.epoch))
+
+    def get(self, task, event):
+        return [i[3] for i in self._history if i[1] == event and i[2] == task]
 
     def benchmark(self, task, event):
         '''

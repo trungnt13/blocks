@@ -309,6 +309,8 @@ class Dataset(object):
                         params['name'] = i
                 elif isinstance(i, (tuple, list)):
                     params['shape'] = i
+        elif isinstance(key, dict):
+            params = key
         return self.get_data(**params)
 
     def __str__(self):

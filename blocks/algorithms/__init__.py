@@ -196,8 +196,14 @@ class UpdatesAlgorithm(TrainingAlgorithm):
                                  .format(self.on_unused_sources))
 
     def process_batch(self, batch):
-        self._validate_source_names(batch)
-        ordered_batch = [batch[v.name] for v in self.inputs]
+        if isinstance(batch, dict):
+            self._validate_source_names(batch)
+            ordered_batch = [batch[v.name] for v in self.inputs]
+        elif isinstance(batch, (tuple, list)):
+            if len(batch) != len(self.inputs):
+                raise ValueError('Need {} inputs, but provided {} inputs'
+                                 '.'.format(len(self.inputs), len(batch)))
+            ordered_batch = batch
         return self._function(*ordered_batch)
 
 

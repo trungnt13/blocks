@@ -18,6 +18,7 @@ from blocks.utils import queue, struct
 
 
 __all__ = [
+    'data',
     'open_hdf5',
     'close_all_hdf5',
     'get_all_hdf_dataset',
@@ -34,6 +35,17 @@ __all__ = [
 # ===========================================================================
 # Helper function
 # ===========================================================================
+def data(x):
+    """ make sure x is Data """
+    if isinstance(x, Data):
+        return x
+    if isinstance(x, np.ndarray):
+        return ArrayData(x)
+    if isinstance(x, (tuple, list)):
+        return DataIterator(x)
+    raise ValueError('Cannot create Data object from given object:{}'.format(x))
+
+
 def _estimate_shape(shape, func):
     ''' This method cannot estimate the shape accurately if you use slice '''
     shape0 = (12 + 8) // 10 * 13
@@ -535,8 +547,59 @@ class ArrayData(Data):
         return self._data.std(axis=axis)
 
     def normalize(self, axis, mean=None, std=None):
-        raise NotImplementedError
+        mean = self._data.mean(axis=axis) if mean is None else mean
+        std = self._data.std(axis=axis) if std is None else std
+        self._data = (self._data - mean) / std
+        return self
 
+    # ==================== low-level operator ==================== #
+    def __add__(self, y):
+        return self._data.__add__(y)
+
+    def __sub__(self, y):
+        return self._data.__sub__(y)
+
+    def __mul__(self, y):
+        return self._data.__mul__(y)
+
+    def __div__(self, y):
+        return self._data.__div__(y)
+
+    def __floordiv__(self, y):
+        return self._data.__floordiv__(y)
+
+    def __pow__(self, y):
+        return self._data.__pow__(y)
+
+    def __neg__(self):
+        return self._data.__neg__()
+
+    def __pos__(self):
+        return self._data.__pos__()
+
+    def __iadd__(self, y):
+        self._data.__iadd__(y)
+        return self
+
+    def __isub__(self, y):
+        self._data.__isub__(y)
+        return self
+
+    def __imul__(self, y):
+        self._data.__imul__(y)
+        return self
+
+    def __idiv__(self, y):
+        self._data.__idiv__(y)
+        return self
+
+    def __ifloordiv__(self, y):
+        self._data.__ifloordiv__(y)
+        return self
+
+    def __ipow__(self, y):
+        self._data.__ipow__(y)
+        return self
 
 # ===========================================================================
 # Memmap Data object
