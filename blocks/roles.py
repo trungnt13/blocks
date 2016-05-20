@@ -67,7 +67,7 @@ def has_roles(var, roles, match_all=False, exact=False):
         matches = (any(isinstance(var_role, role.__class__) for
                        var_role in var_roles) for role in roles)
     else:
-        matches = (any(var_role == role for
+        matches = (any(var_role.__class__ == role.__class__ for
                        var_role in var_roles) for role in roles)
     return all(matches) if match_all else any(matches)
 

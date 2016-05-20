@@ -14,6 +14,9 @@ PI = np.pi
 C = -0.5 * np.log(2 * PI)
 
 
+_RNG = RandomStreams(seed=RNG_GENERATOR.randint(10e8))
+
+
 # ===========================================================================
 # RANDOMNESS
 # ===========================================================================
@@ -36,31 +39,33 @@ class _RandomWrapper(object):
 def rng(seed=None):
     if seed is None:
         seed = RNG_GENERATOR.randint(10e8)
-    return _RandomWrapper(RandomStreams(seed=seed),
-                          np.random.RandomState(seed=seed))
+    return _RandomWrapper(RandomStreams(seed=seed))
 
 
 def random_normal(shape, mean=0.0, std=1.0, dtype=FLOATX, seed=None):
-    if seed is None:
-        seed = RNG_GENERATOR.randint(10e8)
-    rng = RandomStreams(seed=seed)
+    rng = _RNG
+    if seed is not None:
+        rng = RandomStreams(seed=seed)
     return rng.normal(size=shape, avg=mean, std=std, dtype=dtype)
 
 
 def random_uniform(shape, low=0.0, high=1.0, dtype=FLOATX, seed=None):
-    if seed is None:
-        seed = RNG_GENERATOR.randint(10e8)
-    rng = RandomStreams(seed=seed)
+    rng = _RNG
+    if seed is not None:
+        rng = RandomStreams(seed=seed)
     return rng.uniform(shape, low=low, high=high, dtype=dtype)
 
 
 def random_binomial(shape, p, dtype=FLOATX, seed=None):
-    if seed is None:
-        seed = RNG_GENERATOR.randint(10e8)
-    rng = RandomStreams(seed=seed)
+    rng = _RNG
+    if seed is not None:
+        rng = RandomStreams(seed=seed)
     return rng.binomial(size=shape, n=1, p=p, dtype=dtype)
 
 
+# ===========================================================================
+# Noise
+# ===========================================================================
 def _process_noise_dim(input_shape, dims):
     """
     By default, each element is kept or dropped independently.  If `noise_shape`
@@ -87,7 +92,7 @@ def _process_noise_dim(input_shape, dims):
     return noise_shape
 
 
-def apply_dropout(x, level, noise_dims=None, rescale=True, rng=None):
+def apply_dropout(x, level=0.5, noise_dims=None, rescale=True, seed=None):
     """Computes dropout.
 
     With probability `keep_prob`, outputs the input element scaled up by
@@ -112,11 +117,7 @@ def apply_dropout(x, level, noise_dims=None, rescale=True, rng=None):
     ----
     This function only apply noise on Variable with TRAINING role
     """
-    # ====== Validate arguments ====== #
-    if rng is None:
-        rng = _RandomWrapper(RandomStreams(seed=RNG_GENERATOR.randint(10e8)))
-    elif isinstance(rng, RandomStreams):
-        rng = _RandomWrapper(rng)
+    input_shape = K.shape(x)
     # ====== not a training variable NO dropout ====== #
     if not K.is_training(x):
         return x
@@ -124,23 +125,25 @@ def apply_dropout(x, level, noise_dims=None, rescale=True, rng=None):
     retain_prob = 1. - level
     shape = K.shape(x, none=False)
     if noise_dims is None:
-        x = x * rng.binomial(shape=shape, p=retain_prob, dtype=x.dtype)
+        x = x * K.random_binomial(shape=shape, p=retain_prob, dtype=x.dtype, seed=seed)
     else:
         noise_shape = _process_noise_dim(shape, noise_dims)
         # auto select broadcast shape
         broadcast = [i for i, j in enumerate(noise_shape) if j == 1]
         if len(broadcast) > 0:
-            x = x * T.addbroadcast(
-                rng.binomial(shape=noise_shape, p=retain_prob, dtype=x.dtype),
+            x = x * K.addbroadcast(
+                K.random_binomial(shape=noise_shape, p=retain_prob, dtype=x.dtype, seed=seed),
                 *broadcast)
         else:
-            x = x * rng.binomial(shape=noise_shape, p=retain_prob, dtype=x.dtype)
+            x = x * K.random_binomial(shape=noise_shape, p=retain_prob, dtype=x.dtype, seed=seed)
     if rescale:
         x /= retain_prob
+    if isinstance(input_shape, (tuple, list)):
+        K.add_shape(x, input_shape)
     return x
 
 
-def apply_noise(x, sigma, noise_dims=None, noise_type='gaussian', rng=None):
+def apply_noise(x, sigma=0.075, noise_dims=None, noise_type='gaussian', seed=None):
     """
     Parameters
     ----------
@@ -157,12 +160,8 @@ def apply_noise(x, sigma, noise_dims=None, noise_type='gaussian', rng=None):
     ----
     This function only apply noise on Variable with TRAINING role
     """
+    input_shape = K.shape(x)
     noise_type = noise_type.lower()
-    # ====== Validate arguments ====== #
-    if rng is None:
-        rng = _RandomWrapper(RandomStreams(seed=RNG_GENERATOR.randint(10e8)))
-    elif isinstance(rng, RandomStreams):
-        rng = _RandomWrapper(rng)
     # ====== not a training variable NO dropout ====== #
     if not K.is_training(x):
         return x
@@ -171,15 +170,18 @@ def apply_noise(x, sigma, noise_dims=None, noise_type='gaussian', rng=None):
     noise_shape = (shape if noise_dims is None
                    else _process_noise_dim(shape, noise_dims))
     if 'normal' in noise_type or 'gaussian' in noise_type:
-        noise = rng.normal(shape=noise_shape, mean=0.0, std=sigma, dtype=x.dtype)
+        noise = K.random_normal(shape=noise_shape, mean=0.0, std=sigma, dtype=x.dtype, seed=seed)
     elif 'uniform' in noise_type:
-        noise = rng.uniform(shape=noise_shape, low=-sigma, high=sigma, dtype=x.dtype)
+        noise = K.random_uniform(shape=noise_shape, low=-sigma, high=sigma, dtype=x.dtype, seed=seed)
         # no idea why uniform does not give any broadcastable dimensions
         if noise_dims is not None:
             broadcastable = [i for i, j in enumerate(noise_shape) if j == 1]
             if len(broadcastable) > 0:
-                noise = T.addbroadcast(noise, *broadcastable)
-    return x + noise
+                noise = K.addbroadcast(noise, *broadcastable)
+    x = x + noise
+    if isinstance(input_shape, (tuple, list)):
+        K.add_shape(x, input_shape)
+    return x
 
 
 # ===========================================================================

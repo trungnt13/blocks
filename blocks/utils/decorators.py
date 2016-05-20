@@ -470,18 +470,29 @@ class functionable(object):
 
     def __init__(self, func, *args, **kwargs):
         super(functionable, self).__init__()
+        # default arguments lost during pickling so need to store them
         import inspect
+        final_args = OrderedDict()
+        spec = inspect.getargspec(func)
+        for i, j in zip(spec.args, args): # positional arguments
+            final_args[i] = j
+        final_args.update(kwargs)
+        if spec.defaults is not None:
+            final_args.update(reversed([(i, j)
+                            for i, j in zip(reversed(spec.args), reversed(spec.defaults))
+                            if i not in final_args]))
 
         self._function = func
         self._function_name = func.func_name
-        self._function_args = list(args)
-        self._function_kwargs = kwargs
+        self._function_order = spec.args
+        self._function_kwargs = final_args
         # class method, won't be found from func_globals
         _ = dict(func.func_globals)
         # handle the case, using functionable as decorator of methods
         if self._function_name not in _ and inspect.isfunction(func):
             _[self._function_name] = func
         self._sandbox = serialize_sandbox(_)
+        # save source code
         try:
             self._source = inspect.getsource(self._function)
         except:
@@ -496,8 +507,8 @@ class functionable(object):
         return self._function_name
 
     @property
-    def args(self):
-        return self._function_args
+    def args_order(self):
+        return self._function_order
 
     @property
     def kwargs(self):
@@ -510,20 +521,19 @@ class functionable(object):
     def __call__(self, *args, **kwargs):
         kwargs_ = dict(self._function_kwargs)
         kwargs_.update(kwargs)
-        args = list(args) + self._function_args
-        return self._function(*args, **kwargs_)
+        for i, j in zip(self._function_order, args):
+            kwargs_[i] = j
+        return self._function(**kwargs_)
 
     def __str__(self):
         s = 'Name:   %s\n' % self._function_name
-        s += 'args:   %s\n' % str(self._function_args)
         s += 'kwargs: %s\n' % str(self._function_kwargs)
-        s += 'Sandbox:%s\n' % str(self._sandbox)
+        s += 'Sandbox:%s\n' % str(len(self._sandbox))
         s += str(self._source)
         return s
 
     def __eq__(self, other):
         if self._function == other._function and \
-           self._function_args == other._function_args and \
            self._function_kwargs == other._function_kwargs:
             return True
         return False
@@ -538,8 +548,9 @@ class functionable(object):
                 self._function_kwargs[key] = value
         else:
             key = int(key)
-            if key < len(self._function_args):
-                self._function_args[key] = value
+            if key < len(self._function_kwargs):
+                key = self._function_kwargs.keys()[key]
+                self._function_kwargs[key] = value
 
     def __getitem__(self, key):
         if not isinstance(key, (str, int, float, long)):
@@ -547,14 +558,14 @@ class functionable(object):
                              'index of args, but type(key)={}'.format(type(key)))
         if isinstance(key, str):
             return self._function_kwargs[key]
-        return self._function_args(int(key))
+        return self._function_kwargs(int(key))
 
     # ==================== Pickling methods ==================== #
     def __getstate__(self):
         config = OrderedDict()
         # conver to byte
-        config['args'] = self._function_args
         config['kwargs'] = self._function_kwargs
+        config['order'] = self._function_order
         config['name'] = self._function_name
         config['sandbox'] = self._sandbox
         config['source'] = self._source
@@ -563,8 +574,8 @@ class functionable(object):
     def __setstate__(self, config):
         import inspect
 
-        self._function_args = config['args']
         self._function_kwargs = config['kwargs']
+        self._function_order = config['order']
         self._function_name = config['name']
         self._sandbox = config['sandbox']
         self._source = config['source']

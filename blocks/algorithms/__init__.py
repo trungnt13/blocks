@@ -1,4 +1,5 @@
 """Training algorithms."""
+import warnings
 import logging
 import itertools
 from abc import ABCMeta, abstractmethod
@@ -127,10 +128,14 @@ class UpdatesAlgorithm(TrainingAlgorithm):
         logger.debug("Inferring graph inputs...")
         self.inputs = ComputationGraph(update_values).inputs
         logger.debug("Compiling training function...")
+        cost = []
+        if hasattr(self, 'cost'):
+            cost = self.cost
         self._function = theano.function(
-            self.inputs, [], updates=self.updates,
+            self.inputs, cost, updates=self.updates,
             allow_input_downcast=True, **self.theano_func_kwargs)
         logger.info("The training algorithm is initialized")
+        return self
 
     @property
     def updates(self):
@@ -193,7 +198,7 @@ class UpdatesAlgorithm(TrainingAlgorithm):
     def process_batch(self, batch):
         self._validate_source_names(batch)
         ordered_batch = [batch[v.name] for v in self.inputs]
-        self._function(*ordered_batch)
+        return self._function(*ordered_batch)
 
 
 class GradientDescent(UpdatesAlgorithm):
@@ -278,6 +283,9 @@ class GradientDescent(UpdatesAlgorithm):
         # If we don't have gradients, we'll need to infer them from the
         # cost and the parameters, both of which must not be None.
         if not self.gradients:
+            if not self.parameters:
+                self.parameters = ComputationGraph(cost).parameters
+                warnings.warn('Auto infer all paramters from given cost.')
             self.gradients = self._compute_gradients(known_grads,
                                                      consider_constant)
         else:

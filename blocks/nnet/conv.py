@@ -163,9 +163,9 @@ class BaseConv(NNOps):
             activation = conved + K.expand_dims(self.b, 0)
         else:
             activation = conved + K.dimshuffle(self.b, ('x', 0) + ('x',) * self.n)
+        K.add_shape(activation, self.output_shape)
         activation = self.nonlinearity(activation)
         # set shape for output
-        K.add_shape(activation, self.output_shape)
         return activation
 
     def convolve(self, x):

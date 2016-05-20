@@ -15,7 +15,7 @@ from blocks.roles import (add_role, has_roles, PARAMETER, VariableRole,
                           BATCH_NORM_POPULATION_MEAN,
                           BATCH_NORM_SCALE_PARAMETER,
                           BATCH_NORM_POPULATION_STDEV)
-from blocks.utils.decorators import autoinit
+from blocks.utils.decorators import autoinit, functionable
 from blocks.utils import np_utils
 
 
@@ -298,9 +298,10 @@ class Dense(NNOps):
         activation = K.dot(x, self.W)
         if hasattr(self, 'b') and self.b is not None:
             activation = activation + self.b
-        activation = self.nonlinearity(activation)
         # set shape for output
         K.add_shape(activation, input_shape[:-1] + (self.num_units,))
+        # Nonlinearity might change the shape of activation
+        activation = self.nonlinearity(activation)
         return activation
 
 
@@ -423,6 +424,7 @@ class BatchNorm(NNOps):
                  inv_std_init=lambda x: K.init.constant(x, 1.),
                  nonlinearity=K.linear, **kwargs):
         super(BatchNorm, self).__init__(**kwargs)
+        self.nonlinearity = K.linear if nonlinearity is None else nonlinearity
 
     # ==================== abstract method ==================== #
     def _initialize(self, input_shape):
@@ -507,4 +509,118 @@ class BatchNorm(NNOps):
         normalized = (x - mean) * (gamma * inv_std) + beta
         # set shape for output
         K.add_shape(normalized, input_shape)
-        return normalized
+        return self.nonlinearity(normalized)
+
+
+class ParametricRectifier(NNOps):
+    """ This class is adpated from Lasagne:
+    Original work Copyright (c) 2014-2015 lasagne contributors
+    All rights reserved.
+    LICENSE: https://github.com/Lasagne/Lasagne/blob/master/LICENSE
+
+    A layer that applies parametric rectify nonlinearity to its input
+    following [1]_ (http://arxiv.org/abs/1502.01852)
+
+    Equation for the parametric rectifier linear unit:
+    :math:`\\varphi(x) = \\max(x,0) + \\alpha \\min(x,0)`
+
+    Parameters
+    ----------
+    incoming : a :class:`Layer` instance or a tuple
+        The layer feeding into this layer, or the expected input shape
+
+    alpha : Theano shared variable, expression, numpy array or callable
+        Initial value, expression or initializer for the alpha values. The
+        shape must match the incoming shape, skipping those axes the alpha
+        values are shared over (see the example below).
+        See :func:`lasagne.utils.create_param` for more information.
+
+    shared_axes : 'auto', 'all', int or tuple of int
+        The axes along which the parameters of the rectifier units are
+        going to be shared. If ``'auto'`` (the default), share over all axes
+        except for the second - this will share the parameter over the
+        minibatch dimension for dense layers, and additionally over all
+        spatial dimensions for convolutional layers. If ``'all'``, share over
+        all axes, which corresponds to a single scalar parameter.
+
+    **kwargs
+        Any additional keyword arguments are passed to the `Layer` superclass.
+
+     References
+    ----------
+    .. [1] K He, X Zhang et al. (2015):
+       Delving Deep into Rectifiers: Surpassing Human-Level Performance on
+       ImageNet Classification,
+       http://link.springer.com/chapter/10.1007/3-540-49430-8_2
+
+    Notes
+    -----
+    The alpha parameter dimensionality is the input dimensionality minus the
+    number of axes it is shared over, which matches the same convention as
+    the :class:`BiasLayer`.
+
+    >>> layer = ParametricRectifierLayer((20, 3, 28, 28), shared_axes=(0, 3))
+    >>> layer.alpha.get_value().shape
+    (3, 28)
+    """
+
+    @autoinit
+    def __init__(self, alpha_init=lambda x: K.init.constant(x, 0.25),
+                 shared_axes='auto', **kwargs):
+        super(ParametricRectifier, self).__init__(**kwargs)
+
+    # ==================== abstract methods ==================== #
+    def _initialize(self, input_shape):
+        config = NNConfig(input_shape=input_shape)
+
+        if self.shared_axes == 'auto':
+            self.shared_axes = (0,) + tuple(range(2, len(input_shape)))
+        elif self.shared_axes == 'all':
+            self.shared_axes = tuple(range(len(input_shape)))
+        elif isinstance(self.shared_axes, int):
+            self.shared_axes = (self.shared_axes,)
+
+        shape = [size for axis, size in enumerate(input_shape)
+                 if axis not in self.shared_axes]
+        if any(size is None for size in shape):
+            raise ValueError("ParametricRectifierLayer needs input sizes for "
+                             "all axes that alpha's are not shared over.")
+        self.alpha = config.create_params(self.alpha_init, shape, name="alpha",
+                                          roles=PARAMETER, annotations=self)
+        return config
+
+    def _apply(self, x):
+        input_shape = K.shape(x)
+        self.config(input_shape=input_shape)
+        axes = iter(range(K.ndim(self.alpha)))
+        pattern = ['x' if input_axis in self.shared_axes
+                   else next(axes)
+                   for input_axis in range(K.ndim(x))]
+        alpha = K.dimshuffle(self.alpha, pattern)
+        return K.relu(x, alpha)
+
+
+class Sequence(NNOps):
+
+    """ Sequence of Operators """
+
+    def __init__(self, ops, **kwargs):
+        super(Sequence, self).__init__(**kwargs)
+        self.ops = []
+        for i in ops:
+            if inspect.isfunction(i):
+                self.ops.append(functionable(i))
+            elif hasattr(i, '__call__'):
+                self.ops.append(i)
+
+    def _initialize(self, *args, **kwargs):
+        pass
+
+    def _apply(self, x):
+        for op in self.ops:
+            x = op(x)
+        return x
+
+    def _transpose(self):
+        seq = Sequence([i.T for i in self. ops])
+        return seq
