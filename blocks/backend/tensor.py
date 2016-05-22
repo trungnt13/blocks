@@ -93,6 +93,15 @@ def add_shape(var, shape, override=True):
     var.tag.shape = tuple(new_shape)
 
 
+def auto_infer_shape(ops, *var, **kwargs):
+    inputs = []
+    for i in var:
+        input_shape = (0 if s is None else s for s in shape(i))
+        inputs.append(T.alloc(0, *input_shape))
+    output_shape = ops(*inputs, **kwargs).shape.eval()
+    return tuple(s if s else None for s in output_shape)
+
+
 # ===========================================================================
 # VARIABLE MANIPULATION
 # ===========================================================================
@@ -278,7 +287,11 @@ def broadcastable(x):
 
 
 def addbroadcast(x, *axes):
-    return T.addbroadcast(x, *axes)
+    input_shape = shape(x)
+    x = T.addbroadcast(x, *axes)
+    if isinstance(input_shape, (tuple, list)):
+        add_shape(x, input_shape)
+    return x
 
 
 # ===========================================================================
@@ -287,21 +300,35 @@ def addbroadcast(x, *axes):
 def zeros(shape, dtype=FLOATX, name=None):
     """Instantiate an all-zeros variable.
     """
-    return T.zeros(shape=shape, dtype=dtype)
+    x = T.zeros(shape=shape, dtype=dtype)
+    if isinstance(shape, (tuple, list)):
+        add_shape(x, shape)
+    return x
 
 
 def ones(shape, dtype=FLOATX, name=None):
     """Instantiate an all-ones variable.
     """
-    return T.ones(shape=shape, dtype=dtype)
+    x = T.ones(shape=shape, dtype=dtype)
+    if isinstance(shape, (tuple, list)):
+        add_shape(x, shape)
+    return x
 
 
 def ones_like(x):
-    return T.ones_like(x)
+    input_shape = shape(x)
+    x = T.ones_like(x)
+    if isinstance(input_shape, (tuple, list)):
+        add_shape(x, input_shape)
+    return x
 
 
 def zeros_like(x):
-    return T.zeros_like(x)
+    input_shape = shape(x)
+    x = T.zeros_like(x)
+    if isinstance(input_shape, (tuple, list)):
+        add_shape(x, input_shape)
+    return x
 
 
 def count_params(x):
@@ -376,76 +403,109 @@ def eye(n, dtype=FLOATX):
 # ELEMENT-WISE OPERATIONS
 # ===========================================================================
 def var(x, axis=None, keepdims=False):
-    return T.var(x, axis=axis, keepdims=keepdims)
+    y = T.var(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.var, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def max(x, axis=None, keepdims=False):
-    return T.max(x, axis=axis, keepdims=keepdims)
+    y = T.max(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.max, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def min(x, axis=None, keepdims=False):
-    return T.min(x, axis=axis, keepdims=keepdims)
+    y = T.min(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.min, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def sum(x, axis=None, keepdims=False):
     """Sum of the values in a tensor, alongside the specified axis.
     """
-    return T.sum(x, axis=axis, keepdims=keepdims)
-
-
-def add(x, y):
-    return T.add(x, y)
-
-
-def sub(x, y):
-    return T.sub(x, y)
-
-
-def mul(x, y):
-    return T.mul(x, y)
-
-
-def div(x, y):
-    return T.true_div(x, y)
-
-
-def mod(x, y):
-    return T.mod(x, y)
+    y = T.sum(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.sum, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def prod(x, axis=None, keepdims=False):
     """Multiply the values in a tensor, alongside the specified axis.
     """
-    return T.prod(x, axis=axis, keepdims=keepdims)
+    y = T.prod(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.prod, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def mean(x, axis=None, keepdims=False):
     dtype = x.dtype
     if 'int' in dtype:
         dtype = FLOATX
-    return T.mean(x, axis=axis, keepdims=keepdims, dtype=dtype)
+    y = T.mean(x, axis=axis, keepdims=keepdims, dtype=dtype)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.mean, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def std(x, axis=None, keepdims=False):
-    return T.std(x, axis=axis, keepdims=keepdims)
+    y = T.std(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.std, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def any(x, axis=None, keepdims=False):
     """Bitwise reduction (logical OR).
     """
-    return T.any(x, axis=axis, keepdims=keepdims)
+    y = T.any(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.any, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def argmax(x, axis=-1, keepdims=False):
-    return T.argmax(x, axis=axis, keepdims=keepdims)
+    y = T.argmax(x, axis=axis, keepdims=keepdims)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.argmax, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
+
+
+def argmin(x, axis=-1, keepdims=False):
+    y = T.argmin(x, axis=axis, keepdims=False)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.argmin, x, axis=axis, keepdims=keepdims)
+        add_shape(y, output_shape)
+    return y
 
 
 def arange(start, stop=None, step=1, dtype=None):
-    return T.arange(start=start, stop=stop, step=step, dtype=dtype)
+    x = T.arange(start=start, stop=stop, step=step, dtype=dtype)
+    if stop is None:
+        stop = start
+        start = 0
+    add_shape(x, (int(np.ceil((stop - start) / step)),))
+    return x
 
 
 def argsort(x, axis=-1):
-    return T.argsort(x, axis)
+    y = T.argsort(x, axis)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.argsort, x, axis=axis)
+        add_shape(y, output_shape)
+    return y
 
 
 def argtop_k(x, k=1):
@@ -458,8 +518,47 @@ def argtop_k(x, k=1):
     return top
 
 
-def argmin(x, axis=-1):
-    return T.argmin(x, axis=axis, keepdims=False)
+# ===========================================================================
+# Primitive ops
+# ===========================================================================
+def add(x, y):
+    z = T.add(x, y)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.add, x, y)
+        add_shape(z, output_shape)
+    return z
+
+
+def sub(x, y):
+    z = T.sub(x, y)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.sub, x, y)
+        add_shape(z, output_shape)
+    return z
+
+
+def mul(x, y):
+    z = T.mul(x, y)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.mul, x, y)
+        add_shape(z, output_shape)
+    return z
+
+
+def div(x, y):
+    z = T.true_div(x, y)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.true_div, x, y)
+        add_shape(z, output_shape)
+    return z
+
+
+def mod(x, y):
+    z = T.mod(x, y)
+    if isinstance(shape(x), (tuple, list)):
+        output_shape = auto_infer_shape(T.mod, x, y)
+        add_shape(z, output_shape)
+    return z
 
 
 def square(x):
