@@ -125,11 +125,8 @@ def randrectifier(x, lower=0.3, upper=0.8, shared_axes='auto', seed=None):
     return x
 
 
-def rectifier(x, alpha=0., max_value=None):
-    x = K.relu(x, alpha)
-    if max_value is not None:
-        x = K.minimum(x, max_value)
-    return x
+def rectifier(x, alpha=0.):
+    return K.relu(x, alpha)
 
 
 def softmax(x):

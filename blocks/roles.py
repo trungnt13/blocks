@@ -98,6 +98,26 @@ DEPLOYING = DeployingRole()
 
 
 # ===========================================================================
+# Variational
+# ===========================================================================
+class VariationalRole(VariableRole):
+    pass
+
+#: Variational statistics
+VARIATIONAL = VariationalRole()
+
+
+class VariationalMean(VariationalRole):
+    pass
+VARIATIONAL_MEAN = VariationalMean()
+
+
+class VariationalLogsigma(VariationalRole):
+    pass
+VARIATIONAL_LOGSIGMA = VariationalLogsigma()
+
+
+# ===========================================================================
 # Role for Variable
 # ===========================================================================
 class InputRole(VariableRole):

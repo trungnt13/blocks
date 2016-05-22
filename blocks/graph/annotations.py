@@ -6,7 +6,8 @@ def add_annotation(var, annotation):
     annotations = getattr(var.tag, 'annotations', [])
     if any(old_annotation.__class__ == annotation.__class__
            for old_annotation in annotations):
-        raise ValueError
+        return
+        # raise ValueError # stupid Exception, just ignore duplicated annotation
     else:
         var.tag.annotations = annotations + [annotation]
 

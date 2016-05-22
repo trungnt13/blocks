@@ -1,6 +1,7 @@
 from __future__ import division, absolute_import
 
 import inspect
+from itertools import chain
 from abc import ABCMeta, abstractmethod, abstractproperty
 from six import add_metaclass
 from six.moves import zip, range
@@ -11,11 +12,12 @@ from blocks import backend as K
 from blocks.graph import add_annotation, Annotation
 from blocks.roles import (add_role, has_roles, PARAMETER, VariableRole,
                           WEIGHT, BIAS, OUTPUT,
+                          VARIATIONAL, VARIATIONAL_MEAN, VARIATIONAL_LOGSIGMA,
                           BATCH_NORM_SHIFT_PARAMETER,
                           BATCH_NORM_POPULATION_MEAN,
                           BATCH_NORM_SCALE_PARAMETER,
                           BATCH_NORM_POPULATION_STDEV)
-from blocks.utils.decorators import autoinit, functionable
+from blocks.utils.decorators import autoinit, functionable, cache
 from blocks.utils import np_utils
 
 
@@ -303,6 +305,72 @@ class Dense(NNOps):
         # Nonlinearity might change the shape of activation
         activation = self.nonlinearity(activation)
         return activation
+
+
+class VariationalDense(NNOps):
+
+    @autoinit
+    def __init__(self, num_units,
+                 W_init=K.init.symmetric_uniform,
+                 b_init=K.init.constant,
+                 prior_mean=0.,
+                 prior_logsigma=1.,
+                 nonlinearity=K.linear,
+                 seed=None, **kwargs):
+        super(VariationalDense, self).__init__(**kwargs)
+        # hack to prevent infinite useless loop of transpose
+        self._rng = K.rng(seed=seed)
+        self.nonlinearity = K.linear if nonlinearity is None else nonlinearity
+
+    # ==================== helper ==================== #
+    @cache # same x will return the same mean and logsigma
+    def get_mean_logsigma(self, x):
+        b_mean = 0. if not hasattr(self, 'b_mean') else self.b_mean
+        b_logsigma = 0. if not hasattr(self, 'b_logsigma') else self.b_logsigma
+        mean = self.nonlinearity(K.dot(x, self.W_mean) + b_mean)
+        logsigma = self.nonlinearity(K.dot(x, self.W_logsigma) + b_logsigma)
+        mean.name = 'variational_mean'
+        logsigma.name = 'variational_logsigma'
+        add_role(mean, VARIATIONAL_MEAN)
+        add_annotation(mean, self)
+        add_role(logsigma, VARIATIONAL_LOGSIGMA)
+        add_annotation(logsigma, self)
+        return mean, logsigma
+
+    # ==================== abstract methods ==================== #
+    def _transpose(self):
+        raise NotImplementedError
+
+    def _initialize(self, num_inputs):
+        config = NNConfig(num_inputs=num_inputs)
+        shape = (num_inputs, self.num_units)
+
+        config.create_params(self.W_init, shape, 'W_mean', WEIGHT, self)
+        config.create_params(self.W_init, shape, 'W_logsigma', WEIGHT, self)
+        if self.b_init is not None:
+            config.create_params(self.b_init, (self.num_units,), 'b_mean', BIAS, self)
+            config.create_params(self.b_init, (self.num_units,), 'b_logsigma', BIAS, self)
+        return config
+
+    def _apply(self, x):
+        input_shape = K.shape(x)
+        self.config(num_inputs=input_shape[-1])
+        # calculate statistics
+        mean, logsigma = self.get_mean_logsigma(x)
+        # variational output
+        output = mean
+        if K.is_training(x):
+            output = self.sampling(x)
+        # set shape for output
+        K.add_shape(output, input_shape[:-1] + (self.num_units,))
+        return output
+
+    def sampling(self, x):
+        mean, logsigma = self.get_mean_logsigma(x)
+        epsilon = self._rng.normal(shape=K.shape(mean), mean=0.0, std=1.0,
+                                   dtype=mean.dtype)
+        z = mean + K.exp(logsigma) * epsilon
+        return z
 
 
 class BatchNorm(NNOps):
@@ -600,6 +668,36 @@ class ParametricRectifier(NNOps):
         return K.relu(x, alpha)
 
 
+class Switcher(NNOps):
+    """ Simple Ops, perform specific Ops while training and other one for
+    deploying
+    """
+
+    def __init__(self, training, deploying, **kwargs):
+        super(Switcher, self).__init__(**kwargs)
+        self.training = training
+        self.deploying = deploying
+
+    def _initialize(self, *args, **kwargs):
+        pass
+
+    def _apply(self, *args, **kwargs):
+        is_training = False
+        for i in chain(args, kwargs.values()):
+            if K.is_variable(i) and K.is_training(i):
+                is_training = True
+        if is_training:
+            return self.training(*args, **kwargs)
+        else:
+            return self.deploying(*args, **kwargs)
+
+    def _transpose(self):
+        if hasattr(self.training, 'T') and hasattr(self.deploying, 'T'):
+            return Switcher(self.training.T, self.deploying.T,
+                            name=self._name + '_transpose')
+        raise Exception('One of training or deploying ops do not support transpose.')
+
+
 class Sequence(NNOps):
 
     """ Sequence of Operators """
@@ -608,7 +706,7 @@ class Sequence(NNOps):
         super(Sequence, self).__init__(**kwargs)
         self.ops = []
         for i in ops:
-            if inspect.isfunction(i):
+            if inspect.isfunction(i) or inspect.ismethod(i):
                 self.ops.append(functionable(i))
             elif hasattr(i, '__call__'):
                 self.ops.append(i)
