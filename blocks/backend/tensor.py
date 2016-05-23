@@ -262,6 +262,8 @@ def shape(x, none=True):
         allow None value, otherwise, all None (and -1) dimensions are converted to
         intermediate shape variable
     """
+    if not hasattr(x, 'shape'):
+        return None
     shape = x.shape
     if hasattr(x, 'tag') and hasattr(x.tag, 'shape') and x.tag.shape is not None:
         shape = x.tag.shape
@@ -667,7 +669,21 @@ def reverse(x, axis=-1):
 
 
 def concatenate(tensors, axis=-1):
-    return T.concatenate(tensors, axis=axis)
+    x = T.concatenate(tensors, axis=axis)
+    add_shape(x, auto_infer_shape(T.concatenate, *tensors, axis=axis))
+    return x
+
+
+def tile(x, n):
+    y = T.tile(x, n)
+    add_shape(y, auto_infer_shape(T.tile, x, reps=n))
+    return y
+
+
+def stack(*x):
+    y = T.stack(*x)
+    add_shape(y, auto_infer_shape(T.stack, *x))
+    return y
 
 
 def reshape(x, shape_):
@@ -729,10 +745,6 @@ def repeat(x, n, axes=None):
                                 else j * n[axes.index(i)]
                                 for i, j in enumerate(input_shape)]), override=True)
     return x
-
-
-def tile(x, n):
-    return T.tile(x, n)
 
 
 def flatten(x, outdim=2):
@@ -807,10 +819,6 @@ def pad(x, axes=1, padding=1):
                             else input_shape[i] + 2 * padding[axes.index(i)]
                             for i in range(x.ndim)]), override=True)
     return x
-
-
-def stack(*x):
-    return T.stack(*x)
 
 
 # ===========================================================================

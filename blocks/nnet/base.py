@@ -252,7 +252,7 @@ class Dense(NNOps):
 
     @autoinit
     def __init__(self, num_units,
-                 W_init=K.init.symmetric_uniform,
+                 W_init=K.init.glorot_uniform,
                  b_init=K.init.constant,
                  nonlinearity=K.relu,
                  **kwargs):
@@ -313,8 +313,6 @@ class VariationalDense(NNOps):
     def __init__(self, num_units,
                  W_init=K.init.symmetric_uniform,
                  b_init=K.init.constant,
-                 prior_mean=0.,
-                 prior_logsigma=1.,
                  nonlinearity=K.linear,
                  seed=None, **kwargs):
         super(VariationalDense, self).__init__(**kwargs)
@@ -336,6 +334,13 @@ class VariationalDense(NNOps):
         add_role(logsigma, VARIATIONAL_LOGSIGMA)
         add_annotation(logsigma, self)
         return mean, logsigma
+
+    def sampling(self, x):
+        mean, logsigma = self.get_mean_logsigma(x)
+        epsilon = self._rng.normal(shape=K.shape(mean), mean=0.0, std=1.0,
+                                   dtype=mean.dtype)
+        z = mean + K.exp(logsigma) * epsilon
+        return z
 
     # ==================== abstract methods ==================== #
     def _transpose(self):
@@ -364,13 +369,6 @@ class VariationalDense(NNOps):
         # set shape for output
         K.add_shape(output, input_shape[:-1] + (self.num_units,))
         return output
-
-    def sampling(self, x):
-        mean, logsigma = self.get_mean_logsigma(x)
-        epsilon = self._rng.normal(shape=K.shape(mean), mean=0.0, std=1.0,
-                                   dtype=mean.dtype)
-        z = mean + K.exp(logsigma) * epsilon
-        return z
 
 
 class BatchNorm(NNOps):
@@ -710,6 +708,14 @@ class Sequence(NNOps):
                 self.ops.append(functionable(i))
             elif hasattr(i, '__call__'):
                 self.ops.append(i)
+
+    @property
+    def parameters(self):
+        all_parameters = []
+        for i in self.ops:
+            if hasattr(i, 'parameters'):
+                all_parameters += i.parameters
+        return [i for i in all_parameters if has_roles(i, PARAMETER)]
 
     def _initialize(self, *args, **kwargs):
         pass

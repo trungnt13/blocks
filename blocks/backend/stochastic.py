@@ -245,33 +245,3 @@ def log_prob_gaussian2(mu_true, mu_approx, log_vars=1.0, mask=None):
     row_log_probs = T.sum((ind_log_probs * mask), axis=1, keepdims=True)
     return row_log_probs
 
-
-def kl_gaussian(mu, logsigma,
-                prior_mu=0., prior_logsigma=0.):
-    """ KL-divergence between two gaussians.
-    Useful for Variational AutoEncoders. Use this as an activation regularizer
-
-    For taking kl_gaussian as variational regularization, you can take mean of
-    the return matrix
-
-    Parameters:
-    -----------
-    mean, logsigma: parameters of the input distributions
-    prior_mean, prior_logsigma: paramaters of the desired distribution (note the
-        log on logsigma)
-
-
-    Return
-    ------
-    matrix: (n_samples, n_features)
-
-    Note
-    ----
-    origin implementation from:
-    https://github.com/Philip-Bachman/ICML-2015/blob/master/LogPDFs.py
-    Copyright (c) Philip Bachman
-    """
-    gauss_klds = 0.5 * (2 * (prior_logsigma - logsigma) +
-            (T.exp(2 * logsigma) / T.exp(2 * prior_logsigma)) +
-            ((mu - prior_mu)**2.0 / T.exp(2 * prior_logsigma)) - 1.0)
-    return gauss_klds

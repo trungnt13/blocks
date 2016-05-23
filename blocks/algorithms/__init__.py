@@ -148,7 +148,8 @@ class UpdatesAlgorithm(TrainingAlgorithm):
     @property
     def function(self):
         if not hasattr(self, '_function'):
-            raise Exception('You must call initialized first.')
+            warnings.warn('Auto call initialize.')
+            self.initialize()
         return self._function
 
     def add_updates(self, updates):
@@ -196,6 +197,10 @@ class UpdatesAlgorithm(TrainingAlgorithm):
                                  .format(self.on_unused_sources))
 
     def process_batch(self, batch):
+        if not hasattr(self, 'inputs'): # have not initialized
+            warnings.warn('Auto call initialized because of missing inputs')
+            self.initialize()
+
         if isinstance(batch, dict):
             self._validate_source_names(batch)
             ordered_batch = [batch[v.name] for v in self.inputs]
@@ -285,13 +290,21 @@ class GradientDescent(UpdatesAlgorithm):
         self.cost = cost
         self.parameters = parameters
         self.gradients = gradients
-
+        consider_constant = ([consider_constant]
+                             if consider_constant is not None and
+                             not isinstance(consider_constant, (tuple, list))
+                             else consider_constant)
         # If we don't have gradients, we'll need to infer them from the
         # cost and the parameters, both of which must not be None.
         if not self.gradients:
             if not self.parameters:
                 self.parameters = ComputationGraph(cost).parameters
-                warnings.warn('Auto infer all paramters from given cost.')
+                if consider_constant is not None: # remove all parameters belong to constants
+                    ignore_parameters = list(itertools.chain(
+                        *[ComputationGraph(i).parameters for i in consider_constant]))
+                    self.parameters = list(set(self.parameters) - set(ignore_parameters))
+                warnings.warn('Auto infer all paramters from given cost, '
+                              'and excluded all parameters belong to consider_constant.')
             self.gradients = self._compute_gradients(known_grads,
                                                      consider_constant)
         else:

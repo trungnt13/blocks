@@ -287,6 +287,21 @@ def set_labels(ax, title=None, xlabel=None, ylabel=None):
         ax.set_ylabel(ylabel)
 
 
+def plot_vline(x, ymin=0., ymax=1., color='r', ax=None):
+    from matplotlib import pyplot as plt
+    ax = ax if ax is not None else plt.gca()
+    ax.axvline(x=x, ymin=ymin, ymax=ymax, color=color, linewidth=1, alpha=0.6)
+    return ax
+
+
+def plot_histogram(x, bins=12, ax=None):
+    from matplotlib import pyplot as plt
+    ax = ax if ax is not None else plt.gca()
+    weights = np.ones_like(x, dtype=float) / len(x)
+    ax.hist(x, bins=bins, alpha=0.6, weights=weights)
+    return ax
+
+
 def plot_scatter(x, y, color=None, size=4.0, ax=None):
     '''Plot the amplitude envelope of a waveform.
     '''
@@ -301,17 +316,16 @@ def plot_scatter(x, y, color=None, size=4.0, ax=None):
     return ax
 
 
-def plot(x, y=None, ax=None, color='b', lw=1):
+def plot(x, y=None, ax=None, color='b', lw=1, **kwargs):
     '''Plot the amplitude envelope of a waveform.
     '''
     from matplotlib import pyplot as plt
 
     ax = ax if ax is not None else plt.gca()
     if y is None:
-        ax.plot(x, c=color, lw=lw)
+        ax.plot(x, c=color, lw=lw, **kwargs)
     else:
-        ax.plot(x, y, c=color, lw=lw)
-
+        ax.plot(x, y, c=color, lw=lw, **kwargs)
     return ax
 
 
@@ -749,6 +763,7 @@ def plot_hinton(matrix, max_weight=None, ax=None):
 # ===========================================================================
 def plot_show(block=False, tight_layout=False):
     from matplotlib import pyplot as plt
+    # plt.ioff()
     if tight_layout:
         plt.tight_layout()
     plt.show(block=block)

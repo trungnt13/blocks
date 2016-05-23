@@ -6,7 +6,7 @@ from blocks.roles import add_role, PARAMETER
 from .base import NNOps, NNConfig
 
 
-def antirectifier(x):
+def antirectify(x):
     """
     This is the combination of a sample-wise L2 normalization with the
     concatenation of:
@@ -42,7 +42,7 @@ def antirectifier(x):
     return x
 
 
-def randrectifier(x, lower=0.3, upper=0.8, shared_axes='auto', seed=None):
+def randrectify(x, lower=0.3, upper=0.8, shared_axes='auto', seed=None):
     """ This function is adpated from Lasagne
     Original work Copyright (c) 2014-2015 lasagne contributors
     All rights reserved.
@@ -125,7 +125,7 @@ def randrectifier(x, lower=0.3, upper=0.8, shared_axes='auto', seed=None):
     return x
 
 
-def rectifier(x, alpha=0.):
+def rectify(x, alpha=0.):
     return K.relu(x, alpha)
 
 

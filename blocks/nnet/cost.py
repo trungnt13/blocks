@@ -92,3 +92,34 @@ def correntropy_regularize(x, sigma=1.):
     Copyright (c) EderSantana
     """
     return -K.sum(K.mean(K.exp(x**2 / sigma), axis=0)) / K.sqrt(2 * np.pi * sigma)
+
+
+def kl_gaussian(mu, logsigma,
+                prior_mu=0., prior_logsigma=0.):
+    """ KL-divergence between two gaussians.
+    Useful for Variational AutoEncoders. Use this as an activation regularizer
+
+    For taking kl_gaussian as variational regularization, you can take mean of
+    the return matrix
+
+    Parameters:
+    -----------
+    mean, logsigma: parameters of the input distributions
+    prior_mean, prior_logsigma: paramaters of the desired distribution (note the
+        log on logsigma)
+
+
+    Return
+    ------
+    matrix: (n_samples, n_features)
+
+    Note
+    ----
+    origin implementation from:
+    https://github.com/Philip-Bachman/ICML-2015/blob/master/LogPDFs.py
+    Copyright (c) Philip Bachman
+    """
+    gauss_klds = 0.5 * (2 * (prior_logsigma - logsigma) +
+            (K.exp(2 * logsigma) / K.exp(2 * prior_logsigma)) +
+            (K.pow((mu - prior_mu), 2.0) / K.exp(2 * prior_logsigma)) - 1.0)
+    return gauss_klds

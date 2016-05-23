@@ -27,14 +27,14 @@ y = K.placeholder(shape=ds['y_train'].shape, name='y', dtype='int32')
 
 ops = N.Sequence([
     lambda x: K.dimshuffle(x, (0, 'x', 1, 2)),
-    N.Conv2D(16, (3, 3), stride=(1, 1), pad='same', nonlinearity=N.activations.rectifier),
+    N.Conv2D(16, (3, 3), stride=(1, 1), pad='same', nonlinearity=N.activations.rectify),
     K.pool2d,
     N.Dropout(level=0.3),
-    N.Conv2D(32, (3, 3), stride=(1, 1), pad='same', nonlinearity=N.activations.rectifier),
+    N.Conv2D(32, (3, 3), stride=(1, 1), pad='same', nonlinearity=N.activations.rectify),
     K.pool2d,
     N.Dropout(level=0.3),
     K.flatten,
-    N.Dense(64, nonlinearity=N.activations.rectifier),
+    N.Dense(64, nonlinearity=N.activations.rectify),
     N.Dense(10, nonlinearity=N.activations.softmax)
 ])
 ops = cPickle.loads(cPickle.dumps(ops)) # test if the ops is pickle-able
