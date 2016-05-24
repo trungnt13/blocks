@@ -48,7 +48,7 @@ def randrectify(x, lower=0.3, upper=0.8, shared_axes='auto', seed=None):
     All rights reserved.
     LICENSE: https://github.com/Lasagne/Lasagne/blob/master/LICENSE
 
-    Applies a randomized leaky rectify nonlinearity to x.
+    Applies a randomized leaky rectify activation to x.
 
     The randomized leaky rectifier was first proposed and used in the Kaggle
     NDSB Competition, and later evaluated in [1]_. Compared to the standard

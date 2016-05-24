@@ -110,7 +110,7 @@ G_train = algorithms.GradientDescent(cost=G_obj,
                                      parameters=G_net.parameters,
                                      step_rule=algorithms.Adam(learning_rate=0.002))
 D_train = algorithms.GradientDescent(cost=D_obj,
-    consider_constant=Gz,
+                                     consider_constant=Gz,
                                      # parameters=D_net.parameters,
                                      step_rule=algorithms.Adam(learning_rate=0.002))
 

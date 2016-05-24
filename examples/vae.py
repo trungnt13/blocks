@@ -24,14 +24,14 @@ y = K.placeholder(shape=(None,), name='y')
 
 # ==================== Building model ==================== #
 y = K.flatten(X)
-h1 = N.Dense(512, nonlinearity=N.activations.sigmoid)
+h1 = N.Dense(512, activation=N.activations.sigmoid)
 y = h1(y)
 
 # variational
-h2 = N.VariationalDense(128, nonlinearity=K.linear)
+h2 = N.VariationalDense(128, activation=K.linear)
 y = h2(y)
 
-h3 = N.Dense(512, nonlinearity=N.activations.sigmoid)
+h3 = N.Dense(512, activation=N.activations.sigmoid)
 y = h3(y)
 
 y = h1.T(y)

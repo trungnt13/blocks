@@ -254,10 +254,10 @@ class Dense(NNOps):
     def __init__(self, num_units,
                  W_init=K.init.glorot_uniform,
                  b_init=K.init.constant,
-                 nonlinearity=K.relu,
+                 activation=K.relu,
                  **kwargs):
         super(Dense, self).__init__(**kwargs)
-        self.nonlinearity = (K.linear if nonlinearity is None else nonlinearity)
+        self.activation = (K.linear if activation is None else activation)
         # hack to prevent infinite useless loop of transpose
         self._original_dense = None
 
@@ -272,7 +272,7 @@ class Dense(NNOps):
         # create the new dense
         transpose = Dense(num_units=num_units,
                           W_init=self.W_init, b_init=self.b_init,
-                          nonlinearity=self.nonlinearity,
+                          activation=self.activation,
                           name=self._name + '_transpose')
         transpose._original_dense = self
         #create the config
@@ -303,7 +303,7 @@ class Dense(NNOps):
         # set shape for output
         K.add_shape(activation, input_shape[:-1] + (self.num_units,))
         # Nonlinearity might change the shape of activation
-        activation = self.nonlinearity(activation)
+        activation = self.activation(activation)
         return activation
 
 
@@ -313,20 +313,20 @@ class VariationalDense(NNOps):
     def __init__(self, num_units,
                  W_init=K.init.symmetric_uniform,
                  b_init=K.init.constant,
-                 nonlinearity=K.linear,
+                 activation=K.linear,
                  seed=None, **kwargs):
         super(VariationalDense, self).__init__(**kwargs)
         # hack to prevent infinite useless loop of transpose
         self._rng = K.rng(seed=seed)
-        self.nonlinearity = K.linear if nonlinearity is None else nonlinearity
+        self.activation = K.linear if activation is None else activation
 
     # ==================== helper ==================== #
     @cache # same x will return the same mean and logsigma
     def get_mean_logsigma(self, x):
         b_mean = 0. if not hasattr(self, 'b_mean') else self.b_mean
         b_logsigma = 0. if not hasattr(self, 'b_logsigma') else self.b_logsigma
-        mean = self.nonlinearity(K.dot(x, self.W_mean) + b_mean)
-        logsigma = self.nonlinearity(K.dot(x, self.W_logsigma) + b_logsigma)
+        mean = self.activation(K.dot(x, self.W_mean) + b_mean)
+        logsigma = self.activation(K.dot(x, self.W_logsigma) + b_logsigma)
         mean.name = 'variational_mean'
         logsigma.name = 'variational_logsigma'
         add_role(mean, VARIATIONAL_MEAN)
@@ -441,9 +441,9 @@ class BatchNorm(NNOps):
     Notes
     -----
     This layer should be inserted between a linear transformation (such as a
-    :class:`DenseLayer`, or :class:`Conv2DLayer`) and its nonlinearity. The
+    :class:`DenseLayer`, or :class:`Conv2DLayer`) and its activation. The
     convenience function :func:`batch_norm` modifies an existing layer to
-    insert batch normalization in front of its nonlinearity.
+    insert batch normalization in front of its activation.
 
     The behavior can be controlled by passing keyword arguments to
     :func:`lasagne.layers.get_output()` when building the output expression
@@ -488,9 +488,9 @@ class BatchNorm(NNOps):
                  gamma_init=lambda x: K.init.constant(x, 1.),
                  mean_init=K.init.constant,
                  inv_std_init=lambda x: K.init.constant(x, 1.),
-                 nonlinearity=K.linear, **kwargs):
+                 activation=K.linear, **kwargs):
         super(BatchNorm, self).__init__(**kwargs)
-        self.nonlinearity = K.linear if nonlinearity is None else nonlinearity
+        self.activation = K.linear if activation is None else activation
 
     # ==================== abstract method ==================== #
     def _initialize(self, input_shape):
@@ -575,7 +575,7 @@ class BatchNorm(NNOps):
         normalized = (x - mean) * (gamma * inv_std) + beta
         # set shape for output
         K.add_shape(normalized, input_shape)
-        return self.nonlinearity(normalized)
+        return self.activation(normalized)
 
 
 class ParametricRectifier(NNOps):
@@ -584,7 +584,7 @@ class ParametricRectifier(NNOps):
     All rights reserved.
     LICENSE: https://github.com/Lasagne/Lasagne/blob/master/LICENSE
 
-    A layer that applies parametric rectify nonlinearity to its input
+    A layer that applies parametric rectify activation to its input
     following [1]_ (http://arxiv.org/abs/1502.01852)
 
     Equation for the parametric rectifier linear unit:
@@ -711,10 +711,8 @@ class Sequence(NNOps):
 
     @property
     def parameters(self):
-        all_parameters = []
-        for i in self.ops:
-            if hasattr(i, 'parameters'):
-                all_parameters += i.parameters
+        all_parameters = list(chain(
+            *[i.parameters for i in self.ops if hasattr(i, 'parameters')]))
         return [i for i in all_parameters if has_roles(i, PARAMETER)]
 
     def _initialize(self, *args, **kwargs):
