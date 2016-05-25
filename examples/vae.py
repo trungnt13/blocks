@@ -39,7 +39,7 @@ y = h1.T(y)
 graph = ComputationGraph(y)
 mean = VariableFilter(roles=roles.VARIATIONAL_MEAN)(graph.variables)[0]
 logsigma = VariableFilter(roles=roles.VARIATIONAL_LOGSIGMA)(graph.variables)[0]
-kl = K.mean(K.kl_gaussian(mean, logsigma, prior_mu=0., prior_logsigma=0.))
+kl = K.mean(N.cost.kl_gaussian(mean, logsigma, prior_mu=0., prior_logsigma=0.))
 
 f = K.function(X, kl)
 print(f(np.random.uniform(size=(16, 28, 28))))

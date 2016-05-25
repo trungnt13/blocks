@@ -1692,7 +1692,10 @@ def deconv2d(x, kernel, image_shape, filter_shape=None,
         kshp=filter_shape,
         subsample=strides, border_mode=border_mode,
         filter_flip=flip_filters)
-    return op(kernel, x, image_shape[2:])
+    transposed_x = op(kernel, x, image_shape[2:])
+    if isinstance(image_shape, (tuple, list)):
+        add_shape(transposed_x, image_shape)
+    return transposed_x
 
 
 def conv3d(x, kernel, strides=(1, 1, 1), border_mode='valid',

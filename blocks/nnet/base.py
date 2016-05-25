@@ -163,10 +163,6 @@ class NNOps(Annotation):
         self._transpose_ops = None
         NNOps.ID += 1
 
-    def _check_configuration(self):
-        if self._configuration is None:
-            raise Exception('Configuration have not been initilized.')
-
     # ==================== properties ==================== #
     @property
     def name(self):
@@ -175,14 +171,12 @@ class NNOps(Annotation):
     @property
     def T(self):
         """ Return new ops which is transpose of this ops """
-        self._check_configuration()
         if self._transpose_ops is None:
             self._transpose_ops = self._transpose()
         return self._transpose_ops
 
     @property
     def parameters(self):
-        self._check_configuration()
         return [i for i in self._configuration.parameters if has_roles(i, PARAMETER)]
 
     def config(self, *args, **kwargs):
@@ -254,7 +248,7 @@ class Dense(NNOps):
     def __init__(self, num_units,
                  W_init=K.init.glorot_uniform,
                  b_init=K.init.constant,
-                 activation=K.relu,
+                 activation=K.linear,
                  **kwargs):
         super(Dense, self).__init__(**kwargs)
         self.activation = (K.linear if activation is None else activation)
@@ -493,6 +487,9 @@ class BatchNorm(NNOps):
         self.activation = K.linear if activation is None else activation
 
     # ==================== abstract method ==================== #
+    # def _transpose(self):
+        # return None
+
     def _initialize(self, input_shape):
         """ This function return NNConfig for given configuration from arg
         and kwargs
@@ -724,5 +721,55 @@ class Sequence(NNOps):
         return x
 
     def _transpose(self):
-        seq = Sequence([i.T for i in self. ops])
+        transpose_ops = []
+        for i in self.ops:
+            if hasattr(i, 'T'):
+                transpose_implemented = False
+                try:
+                    i.T
+                    transpose_implemented = True
+                except NotImplementedError:
+                    pass
+                if transpose_implemented and i.T is not None:
+                    transpose_ops.append(i.T)
+        seq = Sequence(reversed(transpose_ops))
         return seq
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.ops.__getitem__(key)
+        elif isinstance(key, slice):
+            return Sequence(self.ops.__getitem__(key))
+        elif isinstance(key, str):
+            for i in self.ops:
+                if hasattr(i, '_name') and i._name == key:
+                    return i
+        raise ValueError('key can only be int, slice or str.')
+
+    def __setitem__(self, key, value):
+        return self.ops.__setitem__(key, value)
+
+    # ==================== Arithemic operator ==================== #
+    def __add__(self, other):
+        return Sequence(self.ops + other.ops)
+
+    def __sub__(self, other):
+        return Sequence([i for i in self.ops if i not in other.ops])
+
+    def __iadd__(self, other):
+        self.ops += other.ops
+
+    def __isub__(self, other):
+        self.ops = [i for i in self.ops if i not in other.ops]
+
+    def __and__(self, other):
+        return Sequence([i for i in self.ops if i in other.ops])
+
+    def __iand__(self, other):
+        self.ops = [i for i in self.ops if i in other.ops]
+
+    def __or__(self, other):
+        return self.__add__(other)
+
+    def __ior__(self, other):
+        return self.__iadd__(other)

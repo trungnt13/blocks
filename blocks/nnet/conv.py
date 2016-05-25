@@ -84,9 +84,9 @@ class BaseConv(NNOps):
                  W_init=K.init.glorot_uniform,
                  b_init=K.init.constant,
                  untie_biases=False,
-                 nonlinearity=K.relu, n=None, **kwargs):
+                 activation=K.linear, n=None, **kwargs):
         super(BaseConv, self).__init__(**kwargs)
-        self.nonlinearity = K.linear if nonlinearity is None else nonlinearity
+        self.activation = K.linear if activation is None else activation
         if n is not None:
             if self.pad not in ('valid', 'full', 'same', 'half'):
                 self.pad = as_tuple(pad, n, int)
@@ -164,7 +164,7 @@ class BaseConv(NNOps):
         else:
             activation = conved + K.dimshuffle(self.b, ('x', 0) + ('x',) * self.n)
         K.add_shape(activation, self.output_shape)
-        activation = self.nonlinearity(activation)
+        activation = self.activation(activation)
         # set shape for output
         return activation
 
@@ -222,7 +222,7 @@ class Conv2D(BaseConv):
     2D convolutional layer
 
     Performs a 2D convolution on its input and optionally adds a bias and
-    applies an elementwise nonlinearity.
+    applies an elementwise activation.
 
     Parameters
     ----------
@@ -283,8 +283,8 @@ class Conv2D(BaseConv):
         ``(num_filters, output_rows, output_columns)`` instead.
         See :func:`lasagne.utils.create_param` for more information.
 
-    nonlinearity : callable or None
-        The nonlinearity that is applied to the layer activations. If None
+    activation : callable or None
+        The activation that is applied to the layer activations. If None
         is provided, the layer will be linear.
 
     **kwargs
@@ -316,7 +316,7 @@ class DilatedConv2D(BaseConv):
     """ 2D dilated convolution layer
 
     Performs a 2D convolution with dilated filters, then optionally adds a bias
-    and applies an elementwise nonlinearity.
+    and applies an elementwise activation.
 
     Parameters
     ----------
@@ -355,8 +355,8 @@ class DilatedConv2D(BaseConv):
         ``(num_filters, output_rows, output_columns)`` instead.
         See :func:`lasagne.utils.create_param` for more information.
 
-    nonlinearity : callable or None
-        The nonlinearity that is applied to the layer activations. If None
+    activation : callable or None
+        The activation that is applied to the layer activations. If None
         is provided, the layer will be linear.
 
     **kwargs
@@ -391,11 +391,11 @@ class DilatedConv2D(BaseConv):
                  W_init=K.init.glorot_uniform,
                  b_init=K.init.constant,
                  untie_biases=False,
-                 nonlinearity=K.relu, **kwargs):
+                 activation=K.linear, **kwargs):
         super(DilatedConv2D, self).__init__(num_filters, filter_size, pad=0,
                                             W_init=W_init, b_init=b_init,
                                             untie_biases=untie_biases,
-                                            nonlinearity=nonlinearity, n=2, **kwargs)
+                                            activation=activation, n=2, **kwargs)
         self.dilation = as_tuple(dilation, 2, int)
         self.stride = (1, 1)
 
@@ -437,7 +437,7 @@ class Conv3D(BaseConv):
     3D convolutional layer
 
     Performs a 3D convolution on its input and optionally adds a bias and
-    applies an elementwise nonlinearity.  This implementation uses
+    applies an elementwise activation.  This implementation uses
     ``theano.sandbox.cuda.dnn.dnn_conv3d`` directly.
 
     Parameters
@@ -499,8 +499,8 @@ class Conv3D(BaseConv):
         ``(num_filters, output_rows, output_columns, output_depth)`` instead.
         See :func:`lasagne.utils.create_param` for more information.
 
-    nonlinearity : callable or None
-        The nonlinearity that is applied to the layer activations. If None
+    activation : callable or None
+        The activation that is applied to the layer activations. If None
         is provided, the layer will be linear.
 
     **kwargs

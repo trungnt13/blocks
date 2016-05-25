@@ -70,15 +70,15 @@ X = K.placeholder(shape=input_shape, name='X')
 
 # generator
 G_net = N.Sequence([
-    N.Dense(10, nonlinearity=N.activations.rectify),
-    N.Dense(10, nonlinearity=N.activations.rectify),
-    N.Dense(input_shape[-1], nonlinearity=N.activations.linear)
+    N.Dense(10, activation=N.activations.rectify),
+    N.Dense(10, activation=N.activations.rectify),
+    N.Dense(input_shape[-1], activation=N.activations.linear)
 ])
 # discriminators
 D_net = N.Sequence([
-    N.Dense(10, nonlinearity=N.activations.tanh),
-    N.Dense(10, nonlinearity=N.activations.tanh),
-    N.Dense(1, nonlinearity=N.activations.sigmoid)
+    N.Dense(10, activation=N.activations.tanh),
+    N.Dense(10, activation=N.activations.tanh),
+    N.Dense(1, activation=N.activations.sigmoid)
 ])
 
 # ===========================================================================
