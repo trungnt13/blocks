@@ -182,11 +182,21 @@ class TransposeConv(NNOps):
         conv.config() # check if Ops is initialized
 
     # ==================== abstract method ==================== #
-    def _initialize(self, *args, **kwargs):
+    def _initialize(self, output_shape):
         """ This function return NNConfig for given configuration from arg
         and kwargs
         """
-        raise NotImplementedError
+        config = NNConfig(output_shape=output_shape)
+        b_init = self.conv.b_init
+        untie_biases = self.conv.untie_biases
+        if b_init is not None:
+            if untie_biases:
+                biases_shape = output_shape[1:]
+            else:
+                biases_shape = (output_shape[1],)
+            config.create_params(b_init, shape=biases_shape,
+                                 name='b', roles=BIAS, annotations=self)
+        return config
 
     def _apply(self, x):
         # The AbstractConv2d_gradInputs op takes a kernel that was used for the
@@ -197,6 +207,9 @@ class TransposeConv(NNOps):
             raise Exception('This Ops transpose convolved Variable from shape={}'
                             ' back to original shape={}, but given x has shape={}'
                             '.'.format(self.conv.output_shape[1:], output_shape[1:], K.shape(x)[1:]))
+        # config the bias
+        self.config(output_shape=output_shape)
+        # ====== prepare the deconvolution ====== #
         W_shape = self.conv.get_W_shape(output_shape)
         stride = self.conv.stride
         border_mode = self.conv.pad
@@ -211,7 +224,13 @@ class TransposeConv(NNOps):
                             strides=stride,
                             border_mode=border_mode,
                             flip_filters=False) # because default of Conv2D is True
-        return conved
+        if self.b is not None:
+            if self.conv.untie_biases:
+                conved = K.add(conved, K.expand_dims(self.b, 0))
+            else:
+                conved = K.add(conved,
+                               K.dimshuffle(self.b, ('x', 0) + ('x',) * self.conv.n))
+        return self.conv.activation(conved)
 
     def _transpose(self):
         return self.conv
@@ -278,7 +297,7 @@ class Conv2D(BaseConv):
     b_init : Theano shared variable, expression, numpy array, callable or ``None``
         Initial value, expression or initializer for the biases. If set to
         ``None``, the layer will have no biases. Otherwise, biases should be
-        a 1D array with shape ``(num_filters,)`` if `untied_biases` is set to
+        a 1D array with shape ``(num_filters,)`` if `untie_biases` is set to
         ``False``. If it is set to ``True``, its shape should be
         ``(num_filters, output_rows, output_columns)`` instead.
         See :func:`lasagne.utils.create_param` for more information.
@@ -350,7 +369,7 @@ class DilatedConv2D(BaseConv):
     b_init : Theano shared variable, expression, numpy array, callable or ``None``
         Initial value, expression or initializer for the biases. If set to
         ``None``, the layer will have no biases. Otherwise, biases should be
-        a 1D array with shape ``(num_filters,)`` if `untied_biases` is set to
+        a 1D array with shape ``(num_filters,)`` if `untie_biases` is set to
         ``False``. If it is set to ``True``, its shape should be
         ``(num_filters, output_rows, output_columns)`` instead.
         See :func:`lasagne.utils.create_param` for more information.
@@ -494,7 +513,7 @@ class Conv3D(BaseConv):
     b_init : Theano shared variable, expression, numpy array, callable or ``None``
         Initial value, expression or initializer for the biases. If set to
         ``None``, the layer will have no biases. Otherwise, biases should be
-        a 1D array with shape ``(num_filters,)`` if `untied_biases` is set to
+        a 1D array with shape ``(num_filters,)`` if `untie_biases` is set to
         ``False``. If it is set to ``True``, its shape should be
         ``(num_filters, output_rows, output_columns, output_depth)`` instead.
         See :func:`lasagne.utils.create_param` for more information.

@@ -126,7 +126,22 @@ def randrectify(x, lower=0.3, upper=0.8, shared_axes='auto', seed=None):
 
 
 def rectify(x, alpha=0.):
+    """ You can use LeakyRelu by setting alpha != 0."""
     return K.relu(x, alpha)
+
+
+def exp_linear(x, alpha=1.0):
+    """Exponential Linear Unit:
+    `f(x) =  alpha * (exp(x) - 1.) for x < 0`,
+    `f(x) = x for x >= 0`.
+    """
+    pos = K.relu(x)
+    neg = (x - K.abs(x)) * 0.5
+    input_shape = K.shape(x)
+    x = pos + alpha * (K.exp(neg) - 1.)
+    if isinstance(input_shape, (tuple, list)):
+        K.add_shape(x, input_shape)
+    return x
 
 
 def softmax(x):
