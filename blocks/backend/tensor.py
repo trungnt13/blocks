@@ -259,8 +259,8 @@ def shape(x, none=True):
     Parameters
     ----------
     none : bool
-        allow None value, otherwise, all None (and -1) dimensions are converted to
-        intermediate shape variable
+        allow None value in the shape tuple, otherwise, all None (and -1)
+        dimensions are converted to intermediate shape variable
     """
     if not hasattr(x, 'shape'):
         return None
@@ -270,6 +270,8 @@ def shape(x, none=True):
     # remove None value
     if not none:
         shape = tuple([x.shape[i] if j is None or j < 0 else j for i, j in enumerate(shape)])
+    else:
+        shape = tuple([None if j < 0 else j for i, j in enumerate(shape)])
     return shape
 
 
