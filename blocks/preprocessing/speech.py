@@ -7,6 +7,7 @@
 # ===========================================================================
 from __future__ import print_function, division, absolute_import
 
+import os
 import six
 from collections import OrderedDict
 import warnings
@@ -123,11 +124,18 @@ def read(f, pcm=False):
         waveform (ndarray), sample rate (int)
     '''
     if pcm or (isinstance(f, str) and
-               any(i in f for i in ['pcm', 'PCM', 'SPH', 'sph'])):
+               any(i in f for i in ['pcm', 'PCM'])):
         return (np.memmap(f, dtype=np.int16, mode='r'), None)
 
     from soundfile import read
     return read(f)
+
+
+def est_audio_length(fpath, fs=8000, bitdepth=16):
+    """ Estimate audio length in second """
+    if not os.path.exists(fpath):
+        raise Exception('File at path:%s does not exist' % fpath)
+    return os.path.getsize(fpath) / (bitdepth / 8) / 8000
 
 
 def resample(s, fs, fs_new, algorithm='sinc_best'):

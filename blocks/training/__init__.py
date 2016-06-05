@@ -13,6 +13,13 @@ from .callbacks import *
 
 
 # ===========================================================================
+# Helper
+# ===========================================================================
+_SAVE_TASK = struct()
+_SAVE_TASK.name = "save"
+
+
+# ===========================================================================
 # Tasks
 # ===========================================================================
 class Task(object):
@@ -127,10 +134,42 @@ class MainLoop(object):
 
         if isinstance(dataset, str):
             dataset = Dataset(dataset)
-        elif not isinstance(dataset, Dataset):
+        elif dataset is not None and not isinstance(dataset, Dataset):
             raise Exception('input dataset can be path (string) or Dataset instance.')
         self._dataset = dataset
         self._callback = CallbackList()
+
+        self._stop_now = False
+        self._save_now = False
+
+    # ==================== pickling ==================== #
+    def __setstate__(self, value):
+        self._batch_size = value[0]
+        self._name = value[1]
+        self._rng = value[2]
+        if isinstance(value[3], str):
+            self._dataset = Dataset(value[3])
+        else:
+            self._dataset = None
+        self._callback = value[4]
+
+        self._task = None
+        self._subtask = {} # run 1 epoch after given frequence
+        self._crosstask = {} # randomly run 1 iter given probability
+
+        self._stop_now = False
+        self._save_now = False
+
+    def __getstate__(self):
+        dataset = self._dataset.path if self._dataset is not None else None
+        return self._batch_size, self._name, self._rng, dataset, self._callback
+
+    # ==================== command ==================== #
+    def stop(self):
+        self._stop_now = True
+
+    def save(self):
+        self._save_now = True
 
     # ==================== properties ==================== #
     @property
@@ -223,6 +262,7 @@ class MainLoop(object):
         if self._task is None:
             raise ValueError('You must call set_task and set the main task first.')
         callback = self._callback
+        callback.mainloop = self # set main loop
         epoch_results = []
         task_results = []
         # ====== prepare subtask ====== #
@@ -231,7 +271,20 @@ class MainLoop(object):
         # iterator, epoch_results, task_results, is_ended=False
         crosstask_map = {i: [iter(i), [], [], False] for i in self._crosstask}
         # ====== main logics ====== #
-        for i in self._task:
+        for i in self._task: # each iteration is an batch
+            # ====== check if stop_now ====== #
+            if self._stop_now:
+                self._stop_now = False
+                break
+            # ====== check if save_now ====== #
+            if self._save_now:
+                self._save_now = False
+                callback.mode = 'othertask'
+                callback.task = _SAVE_TASK
+                callback.task_start()
+                callback.task_end()
+                callback.reset()
+            # ====== Main task ====== #
             callback.mode = 'task' # dirty hack
             callback.reset(); callback.task = self._task
             if isinstance(i, str): # start_epoch, end_epoch or end_task
@@ -317,3 +370,5 @@ class MainLoop(object):
                                 callback.results = crosstask_results
                                 callback.task_end()
                                 crosstask_map[crosstask][-1] = True
+                # ====== end ====== #
+        # ====== end loop ====== #

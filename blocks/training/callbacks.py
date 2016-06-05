@@ -1,18 +1,25 @@
+# -*- coding: utf-8 -*-
 from __future__ import division, absolute_import, print_function
 
 import time
 import timeit
 from datetime import datetime
 from collections import defaultdict
+from abc import ABCMeta, abstractmethod
+from six import add_metaclass
 
 import numpy as np
 
 from blocks.utils import Progbar
+from blocks.utils.decorators import functionable
 
 __all__ = [
     'Callback',
     'CallbackList',
     'History',
+    'CheckpointGraph',
+    'EarlyStopGeneralizationLoss',
+    'EarlyStopPatience',
     'ProgressMonitor',
     'Debug'
 ]
@@ -29,6 +36,9 @@ def _parse_result(result):
         return 'list;%d;%s' % (len(result), type_str)
     s = str(result)
     return s[:20]
+
+
+TASK_TYPES = ['task', 'subtask', 'crosstask', 'othertask']
 
 
 # ===========================================================================
@@ -56,8 +66,28 @@ class Callback(object):
         self._epoch = defaultdict(int)
 
         self._mode = None # 'task', 'subtask', 'crosstask'
+        self._mainloop = None
+
+    def __setstate__(self, value):
+        self._task = None
+        self._results = None
+        self._iter = value[0]
+        self._epoch = value[1]
+        self._mode = None # 'itask', 'subtask', 'crosstask'
+        self._mainloop = None
+
+    def __getstate__(self):
+        return self._iter, self._epoch
 
     # ==================== helpers ==================== #
+    @property
+    def mainloop(self):
+        return self._mainloop
+
+    @mainloop.setter
+    def mainloop(self, value):
+        self._mainloop = value
+
     @property
     def task(self):
         return self._task
@@ -81,7 +111,7 @@ class Callback(object):
 
     @mode.setter
     def mode(self, value):
-        if value in ('task', 'subtask', 'crosstask'):
+        if value in TASK_TYPES:
             self._mode = value
 
     @property
@@ -138,54 +168,48 @@ class CallbackList(Callback):
     def __getitem__(self, key):
         return self._callbacks[key]
 
+    def __setstate__(self, value):
+        super(CallbackList, self).__setstate__(value[0])
+        self._callbacks = value[1]
+
+    def __getstate__(self):
+        return super(CallbackList, self).__getstate__(), self._callbacks
+
+    def __str__(self):
+        return 'CallbackList: ' + ', '.join([i.__class__.__name__ for i in self._callbacks])
+
     # ==================== helpers ==================== #
-    @property
-    def task(self):
-        return self._task
+    @Callback.mainloop.setter
+    def mainloop(self, value):
+        self._mainloop = value
+        for i in self._callbacks:
+            i.mainloop = value
 
-    @task.setter
+    @Callback.task.setter
     def task(self, value):
-        if hasattr(value, 'name'):
-            self._task = value
-            for i in self._callbacks:
-                i.task = value
+        self._task = value
+        for i in self._callbacks:
+            i.task = value
 
-    @property
-    def results(self):
-        return self._results
-
-    @results.setter
+    @Callback.results.setter
     def results(self, value):
         self._results = value
         for i in self._callbacks:
             i.results = value
 
-    @property
-    def mode(self):
-        return self._mode
-
-    @mode.setter
+    @Callback.mode.setter
     def mode(self, value):
-        if value in ('task', 'subtask', 'crosstask'):
-            self._mode = value
-            for i in self._callbacks:
-                i.mode = value
+        self._mode = value
+        for i in self._callbacks:
+            i.mode = value
 
-    @property
-    def iter(self):
-        return self._iter[self.task]
-
-    @iter.setter
+    @Callback.iter.setter
     def iter(self, value):
         self._iter[self.task] = value
         for i in self._callbacks:
             i.iter = value
 
-    @property
-    def epoch(self):
-        return self._epoch[self.task]
-
-    @epoch.setter
+    @Callback.epoch.setter
     def epoch(self, value):
         self._epoch[self.task] = value
         for i in self._callbacks:
@@ -220,6 +244,199 @@ class CallbackList(Callback):
 
 
 # ===========================================================================
+# TRaining utilities
+# ===========================================================================
+@add_metaclass(ABCMeta)
+class Checkpoint(Callback):
+    """ Checkpoint
+    Note
+    ----
+    Checkpoint is created once whenever MainLoop.save() is called.
+    """
+
+    def __init__(self, path):
+        super(Checkpoint, self).__init__()
+        self.path = path
+
+    def task_start(self):
+        if self.mode == 'othertask' and self.task.name == 'save':
+            self.save()
+
+    def task_end(self):
+        pass
+
+    @abstractmethod
+    def save(self):
+        pass
+
+    # ==================== Pickling ==================== #
+    def __getstate__(self):
+        return super(Checkpoint, self).__getstate__(), self.path
+
+    def __setstate__(self, value):
+        super(Checkpoint, self).__setstate__(value[0])
+        self.path = value[1]
+
+
+class CheckpointGraph(Checkpoint):
+    """ CheckpointGraph """
+
+    def __init__(self, graph, path):
+        super(CheckpointGraph, self).__init__(path)
+        self.graph = graph
+
+    def save(self):
+        # TODO
+        pass
+
+
+@add_metaclass(ABCMeta)
+class EarlyStop(Callback):
+    """ Early Stopping algorithm based on Generalization Loss criterion,
+    this is strict measure on validation
+
+    Parameters
+    ----------
+    threshold : float
+        for example, threshold = 5, if we loss 5% of performance on validation
+        set, then stop
+    task : string
+        task name for checking this criterion
+    get_value : function
+        function to process the results of given task.
+
+    Note
+    ----
+    The early stop checking will be performed at the end of an epoch.
+    By default, the return value from epoch mean the loss value, i.e lower
+    is better
+    """
+
+    def __init__(self, threshold, task, get_value=lambda x: np.mean(x)):
+        super(EarlyStop, self).__init__()
+        self.threshold = threshold
+        self.task_name = task
+        if get_value is not None and not hasattr(get_value, '__call__'):
+            raise ValueError('get_value must callable')
+        self.get_value = None if get_value is None else functionable(get_value)
+        self._history = []
+
+    # ==================== main callback methods ==================== #
+    def task_start(self):
+        pass
+
+    def task_end(self):
+        pass
+
+    def epoch_start(self):
+        pass
+
+    def epoch_end(self):
+        if self.task.name == self.task_name:
+            value = self.results
+            if self.get_value is not None:
+                value = self.get_value(value)
+            self._history.append(value)
+            # ====== check early stop ====== #
+            shouldSave, shouldStop = self.earlystop(self._history)
+            if shouldSave > 0:
+                self.mainloop.save()
+            if shouldStop > 0:
+                self.mainloop.stop()
+
+    def batch_end(self):
+        pass
+
+    @abstractmethod
+    def earlystop(self, history):
+        """ Any algorithm return: shouldSave, shouldStop """
+        pass
+
+    # ==================== Pickling ==================== #
+    def __getstate__(self):
+        return (super(EarlyStop, self).__getstate__(),
+        self._history, self.threshold, self.task_name, self.get_value)
+
+    def __setstate__(self, value):
+        super(EarlyStop, self).__setstate__(value[0])
+        self._history = value[1]
+        self.threshold = value[2]
+        self.task_name = value[3]
+        self.get_value = value[4]
+
+
+class EarlyStopGeneralizationLoss(EarlyStop):
+
+    def earlystop(self, history):
+        gl_exit_threshold = self.threshold
+        epsilon = 1e-5
+
+        if len(history) == 0: # no save, no stop
+            return 0, 0
+        shouldStop = 0
+        shouldSave = 0
+
+        gl_t = 100 * (history[-1] / (min(history) + epsilon) - 1)
+        if gl_t <= 0 and np.argmin(history) == (len(history) - 1):
+            shouldSave = 1
+            shouldStop = -1
+        elif gl_t > gl_exit_threshold:
+            shouldStop = 1
+            shouldSave = -1
+
+        # check stay the same performance for so long
+        if len(history) > gl_exit_threshold:
+            remain_detected = 0
+            j = history[-int(gl_exit_threshold)]
+            for i in history[-int(gl_exit_threshold):]:
+                if abs(i - j) < epsilon:
+                    remain_detected += 1
+            if remain_detected >= gl_exit_threshold:
+                shouldStop = 1
+        return shouldSave, shouldStop
+
+
+class EarlyStopPatience(EarlyStop):
+    """ Adapted algorithm from keras:
+    All contributions by François Chollet:
+    Copyright (c) 2015, François Chollet.
+    All rights reserved.
+
+    All contributions by Google:
+    Copyright (c) 2015, Google, Inc.
+    All rights reserved.
+
+    All other contributions:
+    Copyright (c) 2015, the respective contributors.
+    All rights reserved.
+
+    LICENSE: https://github.com/fchollet/keras/blob/master/LICENSE
+
+    Stop training when a monitored quantity has stopped improving.
+
+    Parameters
+    ----------
+    patience: number of epochs with no improvement
+        after which training will be stopped.
+    """
+
+    def earlystop(self, history):
+        if not hasattr(self, 'wait'):
+            self.wait = 0
+
+        shouldSave, shouldStop = 0, 0
+        if history[-1] <= np.min(history): # showed improvement
+            self.wait = 0
+            shouldSave = 1
+        else:
+            if self.wait >= self.threshold:
+                shouldSave = -1
+                shouldStop = 1
+            self.wait += 1
+        return shouldSave, shouldStop
+
+
+# ===========================================================================
 # Extension
 # ===========================================================================
 class ProgressMonitor(Callback):
@@ -240,6 +457,15 @@ class ProgressMonitor(Callback):
             self._format_results = True
         self._prog = Progbar(100, title='')
         self._title = title
+
+    def __getstate__(self):
+        return super(ProgressMonitor, self).__getstate__(), self._title, self._format_results
+
+    def __setstate__(self, value):
+        super(ProgressMonitor, self).__setstate__(value[0])
+        self._title = value[1]
+        self._format_results = value[2]
+        self._prog = Progbar(100, title='')
 
     def batch_end(self):
         # do nothing for crosstask
@@ -354,10 +580,11 @@ class History(Callback):
 
     # ==================== pickle interface ==================== #
     def __getstate__(self):
-        return self._history
+        return super(History, self).__getstate__(), self._history
 
     def __setstate__(self, value):
-        self._history = value
+        super(History, self).__setstate__(value[0])
+        self._history = value[1]
 
 
 class Debug(Callback):

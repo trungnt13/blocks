@@ -10,6 +10,7 @@ from __future__ import division, absolute_import
 
 from collections import OrderedDict
 import math
+import numbers
 
 import numpy as np
 
@@ -194,13 +195,12 @@ def is_training(v):
 _PLACEHOLDER_ID = 0
 
 
-def placeholder(shape=None, ndim=None, dtype=FLOATX, name=None, for_training=False):
+def placeholder(shape, dtype=FLOATX, name=None, for_training=False):
     """Instantiate an input data placeholder variable.
     """
-    if shape is None and ndim is None:
-        raise Exception('Specify either a shape or ndim value.')
-    if shape is not None:
-        ndim = len(shape)
+    if not isinstance(shape, (tuple, list)):
+        shape = (shape,)
+    ndim = len(shape)
     broadcast = (False,) * ndim
     # ====== Modify add name prefix ====== #
     # global _PLACEHOLDER_ID
@@ -267,11 +267,13 @@ def shape(x, none=True):
     shape = x.shape
     if hasattr(x, 'tag') and hasattr(x.tag, 'shape') and x.tag.shape is not None:
         shape = x.tag.shape
-    # remove None value
-    if not none:
-        shape = tuple([x.shape[i] if j is None or j < 0 else j for i, j in enumerate(shape)])
-    else:
-        shape = tuple([None if j < 0 else j for i, j in enumerate(shape)])
+        # remove None value
+        if not none:
+            shape = tuple([x.shape[i] if j is None or j < 0 else j
+                           for i, j in enumerate(shape)])
+        else:
+            shape = tuple([None if isinstance(j, numbers.Number) and j < 0 else j
+                           for i, j in enumerate(shape)])
     return shape
 
 
@@ -1778,6 +1780,10 @@ def pool2d(x, pool_size=(2, 2), ignore_border=True,
         Operation executed on each window. `max` and `sum` always exclude
         the padding in the computation. `average` gives you the choice to
         include or exclude it.
+
+    Note
+    ----
+    This pooling algorithm has non-deterministic behaviour on cuDNN
     """
     pool_size = as_tuple(pool_size, 2, int)
     strides = as_tuple(strides, 2, int)
@@ -1836,6 +1842,10 @@ def pool3d(x, pool_size=(2, 2, 2), ignore_border=True,
         Operation executed on each window. `max` and `sum` always exclude
         the padding in the computation. `average` gives you the choice to
         include or exclude it.
+
+    Note
+    ----
+    This pooling algorithm has non-deterministic behaviour on cuDNN
     """
     pool_size = as_tuple(pool_size, 3, int)
     strides = as_tuple(strides, 3, int)

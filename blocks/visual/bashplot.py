@@ -350,6 +350,9 @@ def print_bar(f, height=20.0, bincount=None, binwidth=None, pch="o",
     >>> 0.011| oooooooooooooooooooooo ooooooooooooooooooooooooooo
     >>>       --------------------------------------------------
     '''
+    if len(f) == 1:
+        f = [min(0., np.min(f))] + [i for i in f]
+
     if pch is None:
         pch = "o"
 
