@@ -13,8 +13,8 @@ from abc import ABCMeta
 from collections import defaultdict
 import numpy as np
 
-from blocks.utils import queue, functionable, abstractstatic
-from ..utils.generic_utils import Progbar
+from blocks.utils import queue, Progbar
+from blocks.utils.decorators import functionable, abstractstatic
 
 
 __all__ = [
@@ -126,6 +126,36 @@ class FeatureRecipe(object):
     def _finalize(*args, **kwargs):
         raise NotImplementedError
 
+    # ==================== load from yaml ==================== #
+    @classmethod
+    def load(cls, path):
+        if isinstance(path, str):
+            if os.path.isfile(path):
+                data = open(path, 'r').read()
+            else:
+                data = path
+            import yaml
+            from StringIO import StringIO
+            data = yaml.load(StringIO(data))
+            if isinstance(data, dict):
+                if cls.__name__ in data:
+                    data = data[cls.__name__]
+                return cls(**data)
+        raise Exception('Cannot load yaml recipe from path:%s' % path)
+
+    def dump(self, path=None):
+        """ Return yaml string represent this class """
+        if not hasattr(self, '_arguments'):
+            raise Exception('This method only support @autoinit class, which '
+                            'store all its parameters in _arguments.')
+        import yaml
+        data = {self.__class__.__name__: self._arguments}
+        styles = {'default_flow_style': False, 'encoding': 'utf-8'}
+        if path is not None:
+            yaml.dump(data, open(path, 'w'), **styles)
+            return path
+        return yaml.dump(data, **styles)
+
 
 # ===========================================================================
 # MPI MapReduce
@@ -174,7 +204,6 @@ class MapReduce(object):
         self._tasks = queue()
         self._processes = processes
         self._pool = Pool(processes)
-        self._verbose = verbose
         self._results = defaultdict(list)
 
     # ==================== Get & set ==================== #
@@ -191,7 +220,7 @@ class MapReduce(object):
         return self._processes
 
     # ==================== Task manager ==================== #
-    def push_recipe(self, recipe):
+    def add_recipe(self, recipe):
         if isinstance(recipe, str): # path to pickled file or pickled string
             import cPickle
             if os.path.exists(recipe):
@@ -207,8 +236,8 @@ class MapReduce(object):
         for i in recipe:
             self._tasks.append(i) # in this case, tasks contain recipe
 
-    def push(self, jobs, map_func, reduce_func, finalize_func=None,
-             init_func=None, name=None):
+    def add(self, jobs, map_func, reduce_func=None, finalize_func=None,
+            init_func=None, name=None):
         ''' Wrapped preprocessing procedure in multiprocessing.
                 ....root
                 / / / | \ \ \ ,
@@ -238,7 +267,7 @@ class MapReduce(object):
 
         '''
         if not hasattr(map_func, '__call__') or \
-            not hasattr(reduce_func, '__call__') or \
+            (reduce_func is not None and not hasattr(reduce_func, '__call__')) or \
             (finalize_func is not None and not hasattr(finalize_func, '__call__')) or \
                 (init_func is not None and not hasattr(init_func, '__call__')):
             raise ValueError('map, reduce, finalize and init function must be callable'
@@ -264,7 +293,8 @@ class MapReduce(object):
         # 0. parse task information.
         if isinstance(task, (tuple, list)):
             jobs_list, map_func, reduce_func, finalize_func, init_func, name = task
-            self._flexible_init(init_func)
+            if init_func is not None:
+                self._flexible_init(init_func)
             seq_jobs = []
         elif isinstance(task, FeatureRecipe):
             self._flexible_init(task.initialize) # init first
@@ -288,7 +318,6 @@ class MapReduce(object):
                 raise ValueError('no job for running task!')
             # create progbar
             progbar = Progbar(target=len(jobs_list) + len(seq_jobs),
-                              verbose=self._verbose,
                               title='Task:' + str(name))
             progbar.add(0) # update progress-bar
             # ====== start segment and process jobs ====== #
@@ -299,14 +328,13 @@ class MapReduce(object):
                 if len(j) == 0: continue
                 elif len(j) > self.processes and count < len(jobs) - 1:
                     results = self._pool.map(map_func, j, chunksize=self._cache)
-                else:
+                else: # execute sequently
                     results = [map_func(i) for i in j]
                 # reduce all the results
-                results = reduce_func(results)
+                results = (reduce_func(results)
+                           if reduce_func is not None else None)
                 progbar.add(len(j)) # update progress-bar
-                if isinstance(results, (tuple, list)):
-                    final_results += results
-                elif results is not None:
+                if results is not None:
                     final_results.append(results)
             # finalize all reduced results
             if finalize_func is not None:
@@ -330,7 +358,7 @@ class MapReduce(object):
     def get(self, key):
         return self.__getitem__(key)
 
-    def __call__(self):
+    def run(self):
         while not self._tasks.empty():
             self._run_mpi(self._tasks.get())
 

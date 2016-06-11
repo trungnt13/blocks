@@ -14,7 +14,7 @@ from .data import Hdf5Data, MmapData
 from .dataset import Dataset
 from .features import FeatureRecipe
 
-from blocks.utils import get_all_files
+from blocks.utils import get_all_files, as_tuple, play_audio
 from blocks.utils.decorators import autoinit
 from blocks.preprocessing.textgrid import TextGrid
 from blocks.preprocessing import speech
@@ -66,6 +66,47 @@ def _read_transcript_file(file_path):
     return transcripter
 
 
+def speech_features_extraction(s, fs,
+             n_fft, n_filters, n_ceps, win, shift,
+             delta1, delta2, energy,
+             vad, feature_type, dtype):
+    # VAD
+    vad_idx = None
+    if vad:
+        import sidekit
+        vad_idx = sidekit.frontend.vad.vad_snr(s, 30,
+            fs=fs, shift=shift, nwin=n_fft)
+    # speech features
+    s = speech.spectrogram(s, n_fft=n_fft, hop_length=int(shift * fs),
+        win_length=int(win * fs), center=False)
+    if feature_type != 'spec':
+        logEnergy = speech.compute_logenergy(s) if energy else None
+        s = speech.melspectrogram(S=s, sr=fs, n_mels=n_filters,
+            fmin=0., fmax=fs // 2, center=False)
+        s = speech.logamplitude(s) # LOG-mel filterbanks
+        if feature_type == 'mfcc':
+            s = speech.mfcc(S=s, sr=fs, n_mfcc=n_ceps)
+        if logEnergy is not None: # append log-energy
+            s = np.vstack((s, logEnergy[None, :]))
+        s = _compute_delta(s, delta1, delta2)
+    # transpose into (T, D)
+    s = s.T
+    # validate vad shape
+    if vad_idx is not None:
+        assert vad_idx.shape[0] == s.shape[0], \
+        'VAD and features mismatch: {} != {}'
+        ''.format(vad_idx.shape[0], s.shape[0])
+        vad = vad_idx.astype('int8')
+    else:
+        vad = None
+    # type check
+    s = s.astype(dtype)
+    # normalization
+    sum1 = np.sum(s, axis=0, dtype='float64')
+    sum2 = np.sum(s**2, axis=0, dtype='float64')
+    return s, vad, sum1, sum2
+
+
 class SpeechFeature(FeatureRecipe):
 
     ''' Extract speech features from all audio files in given directory or
@@ -94,79 +135,63 @@ class SpeechFeature(FeatureRecipe):
     ...                      datatype='mem')
 
     '''
-    FEATURE_TYPES = ['spec', 'mfcc', 'filt']
+    FEATURE_TYPES = ['spec', 'mfcc', 'fbank']
 
     @autoinit
-    def __init__(self, input_dir, output_dir,
-                 audio_ext=None, transcript_ext=None,
+    def __init__(self, segments, output, audio_ext=None,
                  n_fft=256, n_filters=40, n_ceps=13,
                  fs=8000, downsample='sinc_best', win=0.025, shift=0.01,
                  delta1=True, delta2=True, energy=True,
-                 local_normalize=False,
                  vad=True, feature_type='spec',
-                 datatype='mmap', dtype='float32', name=None):
-        # ====== super function should be called at the beginning ====== #
-        if all(i not in feature_type for i in SpeechFeature.FEATURE_TYPES):
-            raise ValueError("Only accept one of following feature types:"
-                             "'spec', 'mfcc', 'filt'.")
-        else:
-            feature_type = [i for i in SpeechFeature.FEATURE_TYPES
-                            if i in feature_type][0]
-        if name is None:
-            name = feature_type
+                 datatype='mmap', dtype='float32'):
+        name = 'Extract %s ' % feature_type
         super(SpeechFeature, self).__init__(name)
 
-        if transcript_ext is not None and not isinstance(transcript_ext, (tuple, list)):
-            self.transcript_ext = [transcript_ext]
-
-        if audio_ext is None:
-            audio_ext = ''
-        if not isinstance(audio_ext, (tuple, list)):
-            self.audio_ext = [audio_ext]
-
     def initialize(self, mr):
-        input_dir = self.input_dir
-        output_dir = self.output_dir
-        audio_ext = self.audio_ext
-        transcript_ext = self.transcript_ext
+        # ====== super function should be called at the beginning ====== #
+        if all(i not in self.feature_type for i in SpeechFeature.FEATURE_TYPES):
+            raise ValueError("Only accept one of following feature types:"
+                             "'spec', 'mfcc', 'fbank'.")
+
+        segments = self.segments
+        output = self.output
+        audio_ext = as_tuple('' if self.audio_ext is None else self.audio_ext, 1, str)
         datatype = self.datatype
 
         # ====== load jobs ====== #
-        if not os.path.exists(input_dir):
-            raise ValueError('Path to input_dir must exists, however, '
-                             'exist(input_dir)={}'.format(os.path.exists(input_dir)))
-        if os.path.isdir(input_dir):
-            file_list = get_all_files(input_dir)
+        if not os.path.exists(segments):
+            raise ValueError('Path to segments must exists, however, '
+                             'exist(segments)={}'.format(os.path.exists(segments)))
+        if os.path.isdir(segments):
+            file_list = get_all_files(segments)
+            file_list = [(os.path.basename(i), i, 0.0, -1.0) for i in file_list] # segment, path, start, end
         else: # csv file
-            sep = _auto_detect_seperator(input_dir)
-            file_list = np.genfromtxt(input_dir, dtype='str', delimiter=sep)[:, 0]
-            input_dir = input_dir.replace(os.path.basename(input_dir), '')
-            file_list = map(lambda x: os.path.join(input_dir, x)
-                            if not os.path.exists(x)
+            sep = _auto_detect_seperator(segments)
+            file_list = np.genfromtxt(segments, dtype='str', delimiter=sep)
+            segments = segments.replace(os.path.basename(segments), '')
+            file_list = map(lambda x:
+                            (x[0], os.path.join(segments, x[1]), float(x[2]), float(x[3]))
+                            if not os.path.exists(x[1])
                             else x,
                             file_list)
+        # filter using support audio extension
+        file_list = [f for f in file_list if any(ext in f[1] for ext in audio_ext)]
+        # convert into audio_path -> segment
+        self.jobs = defaultdict(list)
+        for segment, file, start, end in file_list:
+            self.jobs[file].append((segment, start, end))
+        self.jobs = self.jobs.items()[:100]
 
-        audio_list = sorted([f for f in file_list if any(ext in f for ext in audio_ext)])
-        transcript_list = [None] * len(audio_list)
-        if transcript_ext is not None:
-            transcript_list = sorted(
-                [f for f in file_list if any(ext in f for ext in transcript_ext)])
-        self.jobs = list(zip(audio_list, transcript_list))
-
-        # ====== check output_dir ====== #
-        dataset = Dataset(output_dir)
-        if dataset.size > 0:
-            raise ValueError('Dataset at path={} already exists with size={}(MB)'
-                             ''.format(os.path.abspath(output_dir), dataset.size))
+        # ====== check output ====== #
+        dataset = Dataset(output)
         # create map_func
         self.wrap_map(n_fft=self.n_fft, n_filters=self.n_filters, n_ceps=self.n_ceps,
                       fs=self.fs, downsample=self.downsample,
                       win=self.win, shift=self.shift,
                       delta1=self.delta1, delta2=self.delta2, energy=self.energy,
-                      local_normalize=self.local_normalize,
                       vad=self.vad, feature_type=self.feature_type, dtype=self.dtype)
         # create reduce
-        self.wrap_reduce(dataset=dataset, datatype=datatype)
+        self.wrap_reduce(dataset=dataset, datatype=datatype, dataname=self.feature_type)
         # create finalize
         self.wrap_finalize(dataset=dataset)
 
@@ -175,7 +200,6 @@ class SpeechFeature(FeatureRecipe):
              fs=8000, downsample='sinc_best',
              win=0.025, shift=0.01,
              delta1=True, delta2=True, energy=True,
-             local_normalize=False,
              vad=True, feature_type='spec',
              dtype='float32'):
         '''
@@ -184,7 +208,7 @@ class SpeechFeature(FeatureRecipe):
         (name, features, vad, sum1, sum2)
 
         '''
-        audio_path, transcript_path = f
+        audio_path, segments = f
         # load audio data
         s, _ = speech.read(audio_path)
         # check frequency for downsampling (if necessary)
@@ -200,88 +224,62 @@ class SpeechFeature(FeatureRecipe):
         N = len(s)
         # clean the signal
         s = speech.pre_emphasis(s, 0.97)
-        # VAD
-        vad_idx = None
-        if vad:
-            import sidekit
-            vad_idx = sidekit.frontend.vad.vad_snr(s, 30,
-                fs=fs, shift=shift, nwin=n_fft)
-        # speech features
-        s = speech.spectrogram(s, n_fft=n_fft, hop_length=int(shift * fs),
-            win_length=int(win * fs), center=False)
-        if feature_type != 'spec':
-            logEnergy = speech.compute_logenergy(s) if energy else None
-            s = speech.melspectrogram(S=s, sr=fs, n_mels=n_filters,
-                fmin=0., fmax=fs // 2, center=False)
-            s = speech.logamplitude(s) # LOG-mel filterbanks
-            if feature_type == 'mfcc':
-                s = speech.mfcc(S=s, sr=fs, n_mfcc=n_ceps)
-            if logEnergy is not None: # append log-energy
-                s = np.vstack((s, logEnergy[None, :]))
-            s = _compute_delta(s, delta1, delta2)
-        # transpose into (T, D)
-        s = s.T
-        # validate vad shape
-        if vad_idx is not None:
-            assert vad_idx.shape[0] == s.shape[0], \
-            'VAD and features mismatch: {} != {}'
-            ''.format(vad_idx.shape[0], s.shape[0])
-            vad = vad_idx.astype('int8')
-        else:
-            vad = None
-        # type check
-        s = s.astype(dtype)
-        # normalization
-        sum1 = np.sum(s, axis=0, dtype='float64')
-        sum2 = np.sum(s**2, axis=0, dtype='float64')
-        if local_normalize:
-            s = normalize(s, axis=0)
-        # name without extension
-        name = os.path.basename(audio_path).split('.')
-        name = ''.join(name[:-1])
-        # reading the transcript
-        trans = None
-        if transcript_path is not None:
-            transcripter = _read_transcript_file(transcript_path)
-            xmin, xmax = transcripter.min_max()
-            idx = np.linspace(xmin, xmax, num=N, endpoint=True)
-            idx = segment_axis(a=idx, frame_length=n_fft, hop_length=int(shift * fs),
-                               axis=0, end='cut', endvalue=0)
-            # start, end of a segment
-            trans = np.asarray([transcripter.transcript((i[0], i[-1])) for i in idx])
-            assert trans.shape[0] == s.shape[0], 'Shape of transcript and features'\
-                ' are mismatch, {} != {}'.format(trans.shape[0], s.shape[0])
-        return (name, s, vad, trans, sum1, sum2)
+        features = []
+        for name, start, end in segments:
+            start = int(float(start) * fs)
+            end = int(N if end < 0 else end * fs)
+            data = s[start:end, :]
+            if len(data.shape) == 2: # 2 channel
+                x0 = speech_features_extraction(s[:, 0].ravel(), fs=fs,
+                    n_fft=n_fft, n_filters=n_filters, n_ceps=n_ceps,
+                    win=win, shift=shift, delta1=delta1, delta2=delta2,
+                    energy=energy, vad=vad, feature_type=feature_type, dtype=dtype)
+                x1 = speech_features_extraction(s[:, 1].ravel(), fs=fs,
+                    n_fft=n_fft, n_filters=n_filters, n_ceps=n_ceps,
+                    win=win, shift=shift, delta1=delta1, delta2=delta2,
+                    energy=energy, vad=vad, feature_type=feature_type, dtype=dtype)
+                features.append((name + '-0',) + x0)
+                features.append((name + '-1',) + x1)
+            else: # only 1 channel
+                x = speech_features_extraction(s.ravel(), fs=fs,
+                    n_fft=n_fft, n_filters=n_filters, n_ceps=n_ceps,
+                    win=win, shift=shift, delta1=delta1, delta2=delta2,
+                    energy=energy, vad=vad, feature_type=feature_type, dtype=dtype)
+                features.append((name,) + x)
+        return features
 
     @staticmethod
-    def _reduce(results, dataset, datatype):
-        # contains (name, features, vad, transcript, sum1, sum2)
-        new_results = []
-        for name, features, vad, trans, sum1, sum2 in results:
-            # features
-            x = dataset.get_data(name, dtype=features.dtype, shape=features.shape,
-                                 datatype=datatype, value=features)
-            dataset.close(name)
-            if vad is not None: # vad
-                x = dataset.get_data(name + '_vad', dtype=vad.dtype, shape=vad.shape,
-                                     datatype=datatype, value=vad)
-                dataset.close(name + '_vad')
-            if trans is not None: # transcript
-                x = dataset.get_data(name + '_trans', dtype=trans.dtype, shape=trans.shape,
-                                     datatype=datatype, value=trans)
-                dataset.close(name + '_trans')
-            # just pass sum1, sum2, len(x) for finalize
-            new_results.append((sum1, sum2, len(x)))
-        return new_results
+    def _reduce(results, dataset, datatype, dataname):
+        # contains (name, features, vad, sum1, sum2)
+        index = []
+        sum1, sum2 = 0, 0
+        for r in results:
+            for name, features, vad, s1, s2 in r:
+                index.append([name, features.shape[0]])
+                # features
+                dataset.get_data(dataname, dtype=features.dtype,
+                                 shape=features.shape, datatype=datatype,
+                                 value=features)
+                if vad is not None: # vad
+                    dataset.get_data(dataname + '_vad', dtype=vad.dtype,
+                                     shape=vad.shape, datatype=datatype, value=vad)
+                # just pass sum1, sum2, len(x) for finalize
+                sum1 += s1
+                sum2 += s2
+        return (sum1, sum2, index)
 
     @staticmethod
     def _finalize(results, dataset):
         # contains (sum1, sum2, n)
         sum1, sum2, n = 0, 0, 0
-        for s1, s2, nb in results:
+        indices = []
+        for s1, s2, index in results:
             sum1 += s1
             sum2 += s2
-            n += nb
+            for name, size in index:
+                # name, start, end
+                indices.append([name, int(n), int(n + size)])
+                n += size
         mean = sum1 / n
         std = np.sqrt((sum2 - sum1**2 / n) / n)
         assert not np.any(np.isnan(mean)), 'Mean contains NaN'
@@ -290,6 +288,10 @@ class SpeechFeature(FeatureRecipe):
         dataset.get_data('std', dtype=std.dtype, shape=std.shape, value=std)
         path = dataset.path
         dataset.close()
+        # ====== saving indices ====== #
+        with open(os.path.join(path, 'indices.csv'), 'w') as f:
+            for name, start, end in indices:
+                f.write('%s %d %d \n' % (name, start, end))
         return {'dataset': path, 'mean': mean, 'std': std}
 
 

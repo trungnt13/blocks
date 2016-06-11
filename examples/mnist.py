@@ -41,7 +41,6 @@ ops = cPickle.loads(cPickle.dumps(ops)) # test if the ops is pickle-able
 y_pred_train = ops(X)
 add_role(X, DEPLOYING)
 y_pred_test = ops(X)
-
 cost_train = N.cost.categorical_crossentropy(y_pred_train, y)
 cost_test = N.cost.categorical_accuracy(y_pred_test, y)
 
@@ -51,7 +50,14 @@ f_train = alg.function
 f_test = K.function([X, y], cost_test)
 
 task = training.MainLoop(dataset=ds, batch_size=128)
-task.add_callback(training.ProgressMonitor(title='Results: %.2f'), training.History())
+task.add_callback(
+    training.ProgressMonitor(title='Results: %.2f'),
+    training.History(),
+    # training.EarlyStopGeneralizationLoss(5, 'valid', lambda x: 1 - np.mean(x)),
+    training.EarlyStopPatience(0, 'valid', lambda x: 1 - np.mean(x)),
+    training.CheckpointGraph('graph', 'path')
+)
+task = cPickle.loads(cPickle.dumps(task))
 task.set_task(f_train, ('X_train', 'y_train'), epoch=1, name='train')
 task.add_subtask(f_test, ('X_valid', 'y_valid'), freq=0.3, name='valid')
 task.add_subtask(f_test, ('X_test', 'y_test'), epoch=1, when=-1, name='test')
@@ -62,5 +68,9 @@ valid = [np.mean(i) for i in valid]
 print(valid)
 print(visual.print_bar(valid, bincount=len(valid)))
 
-test = np.mean(task.callback[1].get(task='test', event='epoch_end')[0])
-print('Test accuracy:', test)
+
+try:
+    test = np.mean(task.callback[1].get(task='test', event='epoch_end')[0])
+    print('Test accuracy:', test)
+except:
+    pass

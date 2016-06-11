@@ -2,6 +2,9 @@ from __future__ import print_function
 import os
 import sys
 import time
+import timeit
+import subprocess
+import tempfile
 import contextlib
 from collections import OrderedDict, deque
 
@@ -620,7 +623,7 @@ def as_tuple(x, N, t=None):
     LICENSE: https://github.com/Lasagne/Lasagne/blob/master/LICENSE
     """
     try:
-        X = tuple(x)
+        X = tuple(x) if not isinstance(x, str) else (x,)
     except TypeError:
         X = (x,) * N
 
@@ -642,6 +645,9 @@ class struct(object):
 
     '''Flexible object can be assigned any attribtues'''
     pass
+
+    def __getitem__(self, x):
+        return x
 
 
 class queue(object):
@@ -1013,6 +1019,93 @@ def is_path(path):
 # ===========================================================================
 # Misc
 # ===========================================================================
+def get_cpu_count():
+    ''' Returns the number of CPUs in the system
+    '''
+    num = 1
+    if sys.platform == 'win32':
+        try:
+            num = int(os.environ['NUMBER_OF_PROCESSORS'])
+        except:
+            pass
+    elif sys.platform == 'darwin':
+        try:
+            num = int(os.popen('sysctl -n hw.ncpu').read())
+        except:
+            pass
+    else:
+        try:
+            num = os.sysconf('SC_NPROCESSORS_ONLN')
+        except:
+            pass
+    return num
+
+
+@contextlib.contextmanager
+def UnitTimer(factor=1):
+    start = timeit.default_timer()
+    yield None
+    end = timeit.default_timer()
+    print('Time: %f (sec)' % ((end - start) / factor))
+
+
+@contextlib.contextmanager
+def TemporaryDirectory(add_to_path=False):
+    temp_dir = tempfile.mkdtemp()
+    if add_to_path:
+        os.environ['PATH'] = temp_dir + ':' + os.environ['PATH']
+    current_dir = os.getcwd()
+    os.chdir(temp_dir)
+    yield temp_dir
+    os.chdir(current_dir)
+    if add_to_path:
+        os.environ['PATH'] = os.environ['PATH'].replace(temp_dir + ':', '')
+    shutil.rmtree(temp_dir)
+
+
+def exec_commands(cmds):
+    ''' Exec commands in parallel in multiple process
+    (as much as we have CPU)
+
+    Return
+    ------
+    failed: list of failed command
+    '''
+    if not cmds: return [] # empty list
+    if not isinstance(cmds, (list, tuple)):
+        cmds = [cmds]
+
+    def done(p):
+        return p.poll() is not None
+
+    def success(p):
+        return p.returncode == 0
+
+    max_task = get_cpu_count()
+    processes = []
+    processes_map = {}
+    failed = []
+    while True:
+        while cmds and len(processes) < max_task:
+            task = cmds.pop()
+            p = subprocess.Popen(task, shell=True)
+            processes.append(p)
+            processes_map[p] = task
+
+        for p in processes:
+            if done(p):
+                if success(p):
+                    processes.remove(p)
+                else:
+                    failed.append(processes_map[p])
+
+        if not processes and not cmds:
+            break
+        else:
+            time.sleep(0.005)
+    return failed
+
+
 def save_wav(path, s, fs):
     from scipy.io import wavfile
     wavfile.write(path, fs, s)
@@ -1040,9 +1133,10 @@ def play_audio(data, fs, volumn=1, speed=1):
         channels = 1
     else:
         channels = data.shape[1]
-    with sf.SoundFile('/tmp/tmp_play.wav', 'w', fs, channels,
-                   subtype=None, endian=None, format=None, closefd=None) as f:
-        f.write(data)
-    os.system('afplay -v %f -q 1 -r %f /tmp/tmp_play.wav &' % (volumn, speed))
-    raw_input('<enter> to stop audio.')
-    os.system("kill -9 `ps aux | grep -v 'grep' | grep afplay | awk '{print $2}'`")
+    with TemporaryDirectory() as temppath:
+        with sf.SoundFile(os.path.join(temppath, 'tmp_play.wav'), 'w', fs, channels,
+                       subtype=None, endian=None, format=None, closefd=None) as f:
+            f.write(data)
+        os.system('afplay -v %f -q 1 -r %f /tmp/tmp_play.wav &' % (volumn, speed))
+        raw_input('<enter> to stop audio.')
+        os.system("kill -9 `ps aux | grep -v 'grep' | grep afplay | awk '{print $2}'`")
