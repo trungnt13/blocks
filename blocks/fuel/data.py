@@ -128,7 +128,7 @@ class Data(object):
         self._batch_size = 256
         self._start = 0.
         self._end = 1.
-        self._seed = queue()
+        self._seed = None
         self._status = 0 # flag show that array valued changed
         # main data object that have shape, dtype ...
         self._data = None
@@ -158,9 +158,8 @@ class Data(object):
         old_seed = self._seed
         old_start = self._start
         old_end = self._end
-        self.set_batch(start=0., end=1., seed=None)
         # less than million data points, not a big deal
-        for X in iter(self):
+        for X in iter(self.set_batch(start=0., end=1., seed=None)):
             if s is None:
                 s = [o(X, axis) for o in ops]
             else:
@@ -231,8 +230,7 @@ class Data(object):
     def set_batch(self, batch_size=None, seed=None, start=None, end=None):
         if isinstance(batch_size, int) and batch_size > 0:
             self._batch_size = batch_size
-        if seed is not None:
-            self._seed.put(seed)
+        self._seed = seed
         if start is not None and start > 0. - 1e-12:
             self._start = start
         if end is not None and end > 0. - 1e-12:
@@ -248,9 +246,9 @@ class Data(object):
         return self._data.__setitem__(x, y)
 
     # ==================== iteration ==================== #
-    def __iter__(self):
+    def __iter(self):
         batch_size = self._batch_size
-        seed = self._seed.pop_default()
+        seed = self._seed; self._seed = None
         shape = self._data.shape
 
         # custom batch_size
@@ -268,9 +266,15 @@ class Data(object):
             np.random.seed(seed)
             np.random.shuffle(idx)
 
+        yield None # this dummy return to make everything initialized
         for i in idx:
             start, end = i
             yield self._transformer(self._data[start:end])
+
+    def __iter__(self):
+        it = self.__iter()
+        it.next()
+        return it
 
     # ==================== Strings ==================== #
     def __len__(self):
@@ -295,6 +299,10 @@ class Data(object):
                     accepted_arrays.append(a)
                     new_size += a.shape[0]
         old_size = shape[0]
+        # special case, Mmap is init with temporary size = 1 (all zeros)
+        if old_size == 1 and np.sum(np.abs(self._data[:1])) == 0.:
+            old_size = 0
+        # resize and append data
         self.resize(old_size + new_size) # resize only once will be faster
         for a in accepted_arrays:
             self._data[old_size:old_size + a.shape[0]] = a
@@ -645,6 +653,10 @@ class MmapData(Data):
         of `dtype`, you must specify `shape`. By default, the returned array
         will be 1-D with the number of elements determined by file size
         and data-type.
+
+    Note
+    ----
+    This class always read MmapData with mode=r+
     """
 
     # name.float32.(8,12)
@@ -676,7 +688,7 @@ class MmapData(Data):
             shape = tuple([1 if i is None else i for i in shape])
         # ====== try to find relevant file if possible ====== #
         mmap_path = None
-        mode = 'r+'
+        mode = 'r+' # FIXED mode = r+
         files = os.listdir(path)
         for f in files:
             match = self.PATTERN.match(f)
@@ -702,6 +714,8 @@ class MmapData(Data):
                 raise ValueError('dtype and shape must be specified in write '
                                  'mode, but shape={} and dtype={}'
                                  ''.format(shape, dtype))
+            if shape[0] <= 0:
+                shape = (1,) + shape[1:]
             mmap_path = os.path.join(path, MmapData.info_to_name(name, shape, dtype))
             mode = 'w+'
         # store variables
@@ -1321,8 +1335,8 @@ class DataIterator(MutableData):
         return self
 
     # ==================== main logic of batch iterator ==================== #
-    def __iter__(self):
-        seed = self._seed.pop_default()
+    def __iter(self):
+        seed = self._seed; self._seed = None
         if seed is not None:
             rng = np.random.RandomState(seed)
         else: # deterministic RandomState
@@ -1356,6 +1370,8 @@ class DataIterator(MutableData):
         # predefined (start,end) pair of each batch (e.g (0,256), (256,512))
         idx = list(range(0, batch_size + distribution.sum(), batch_size))
         idx = list(zip(idx, idx[1:]))
+        # Dummy return to initialize everything
+        yield None
         #####################################
         # 1. optimized parallel code.
         if not sequential:
@@ -1502,9 +1518,9 @@ class DataMerge(MutableData):
         return self._transformer(x)
 
     # ==================== iteration ==================== #
-    def __iter__(self):
+    def __iter(self):
         batch_size = self._batch_size
-        seed = self._seed.pop_default()
+        seed = self._seed = self._seed = None
         # ====== prepare root first ====== #
         shape = self._data[0].shape
         # custom batch_size
@@ -1530,6 +1546,8 @@ class DataMerge(MutableData):
                 batches.append(idx)
             else:
                 batches.append(none_idx)
+
+        yield None # dummy return for initialize everything
         for b in zip(*batches):
             data = self._merge_func([i[j] for i, j in zip(self._data, b)])
             yield self._transformer(data)
