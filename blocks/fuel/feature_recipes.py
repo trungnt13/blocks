@@ -124,9 +124,9 @@ class SpeechFeature(FeatureRecipe):
     ----------
     segments : path, list
         if path, directory of all audio file, or segment csv file in format
-            name                     path          start end
-        sw02001-A_000098-001156 /path/to/sw02001-A  0.0  -1
-        sw02001-A_001980-002131 /path/to/sw02001-A  0.0  -1
+            name                     path            start end  channel
+        sw02001-A_000098-001156 /path/to/sw02001.sph  0.0  -1     0
+        sw02001-B_001980-002131 /path/to/sw02001.sph  0.0  -1     1
     win : float
         frame or window length in second
     shift : float
@@ -193,29 +193,24 @@ class SpeechFeature(FeatureRecipe):
             else: # csv file
                 sep = _auto_detect_seperator(segments)
                 file_list = np.genfromtxt(segments, dtype='str', delimiter=sep)
-                segments = segments.replace(os.path.basename(segments), '')
-                file_list = map(lambda x:
-                                (x[0], os.path.join(segments, x[1]), float(x[2]), float(x[3]))
-                                if not os.path.exists(x[1])
-                                else x,
-                                file_list)
         elif isinstance(segments, (tuple, list)):
             if isinstance(segments[0], str): # just a list of path to file
                 file_list = [(os.path.basename(i), os.path.abspath(i), 0.0, -1.0)
                              for i in segments]
             elif isinstance(segments[0], (tuple, list)):
-                if len(segments[0]) != 4:
+                if len(segments[0]) != 4 and len(segments[0]) != 5:
                     raise Exception('segments must contain information in following for:'
                                     '[name] [path] [start] [end]')
                 file_list = segments
         # filter using support audio extension
         file_list = [f for f in file_list if any(ext in f[1] for ext in audio_ext)]
+        # if no channel is provided, append the channel
+        file_list = [list(f) + [0] if len(f) == 4 else f for f in file_list]
         # convert into audio_path -> segment
         self.jobs = defaultdict(list)
-        for segment, file, start, end in file_list:
-            self.jobs[file].append((segment, start, end))
-        self.jobs = self.jobs.items()
-
+        for segment, file, start, end, channel in file_list:
+            self.jobs[file].append((segment, float(start), float(end), int(channel)))
+        self.jobs = sorted(self.jobs.items(), key=lambda x: x[0])
         # ====== check output ====== #
         dataset = Dataset(output)
         # create map_func
@@ -257,32 +252,16 @@ class SpeechFeature(FeatureRecipe):
                 fs = _
         N = len(s)
         features = []
-        for name, start, end in segments:
+        for name, start, end, channel in segments:
             start = int(float(start) * fs)
             end = int(N if end < 0 else end * fs)
-            data = s[start:end, :]
-            # ====== 2 channels ====== #
-            if len(data.shape) == 2:
-                tmp = speech_features_extraction(s[:, 0].ravel(), fs=fs,
-                    n_filters=n_filters, n_ceps=n_ceps,
-                    win=win, shift=shift, delta_order=delta_order,
-                    energy=energy, vad=vad, dtype=dtype,
-                    get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
-                features.append((name + '-A',) + tmp)
-                tmp = speech_features_extraction(s[:, 1].ravel(), fs=fs,
-                    n_filters=n_filters, n_ceps=n_ceps,
-                    win=win, shift=shift, delta_order=delta_order,
-                    energy=energy, vad=vad, dtype=dtype,
-                    get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
-                features.append((name + '-B',) + tmp)
-            # ====== Only 1 channel ====== #
-            else:
-                tmp = speech_features_extraction(s.ravel(), fs=fs,
-                    n_filters=n_filters, n_ceps=n_ceps,
-                    win=win, shift=shift, delta_order=delta_order,
-                    energy=energy, vad=vad, dtype=dtype,
-                    get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
-                features.append((name,) + tmp)
+            data = s[start:end, channel] if s.ndim > 1 else s[start:end]
+            tmp = speech_features_extraction(data.ravel(), fs=fs,
+                n_filters=n_filters, n_ceps=n_ceps,
+                win=win, shift=shift, delta_order=delta_order,
+                energy=energy, vad=vad, dtype=dtype,
+                get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
+            features.append((name,) + tmp)
         return features
 
     @staticmethod
