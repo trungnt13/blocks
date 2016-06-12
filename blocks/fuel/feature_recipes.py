@@ -77,7 +77,7 @@ def speech_features_extraction(s, fs, n_filters, n_ceps, win, shift,
         raise Exception('Speech Feature Extraction only accept 1-D signal')
     # speech features, shape: [Time, Dimension]
     mfcc, logEnergy, spec, mspec = sidekit.frontend.mfcc(
-        s, lowfreq=64, maxfreq=fs // 2, nlogfilt=n_filters,
+        s, fs=fs, lowfreq=64, maxfreq=fs // 2, nlogfilt=n_filters,
         nwin=win, shift=shift, nceps=n_ceps,
         get_spec=get_spec, get_mspec=get_mspec)
     mfcc = mfcc if get_mfcc else None
@@ -162,7 +162,6 @@ class SpeechFeature(FeatureRecipe):
     Example
     -------
     '''
-    FEATURE_TYPES = ['spec', 'mfcc', 'fbank']
 
     @autoinit
     def __init__(self, segments, output, audio_ext=None, fs=8000,
@@ -290,9 +289,9 @@ class SpeechFeature(FeatureRecipe):
     def _reduce(results, dataset, datatype):
         # contains (name, spec, mspec, mfcc, vad)
         index = []
-        spec_sum1, spec_sum2 = 0, 0
-        mspec_sum1, mspec_sum2 = 0, 0
-        mfcc_sum1, mfcc_sum2 = 0, 0
+        spec_sum1, spec_sum2 = 0., 0.
+        mspec_sum1, mspec_sum2 = 0., 0.
+        mfcc_sum1, mfcc_sum2 = 0., 0.
         for r in results:
             for name, spec, mspec, mfcc, vad in r:
                 if spec is not None:
@@ -302,7 +301,7 @@ class SpeechFeature(FeatureRecipe):
                     spec_sum1 += sum1; spec_sum2 += sum2
                 if mspec is not None:
                     X, sum1, sum2 = mspec
-                    dataset.get_data('fbank', dtype=X.dtype, shape=X.shape,
+                    dataset.get_data('mspec', dtype=X.dtype, shape=X.shape,
                                      datatype=datatype, value=X)
                     mspec_sum1 += sum1; mspec_sum2 += sum2
                 if mfcc is not None:
@@ -325,9 +324,10 @@ class SpeechFeature(FeatureRecipe):
     @staticmethod
     def _finalize(results, dataset, get_spec, get_mspec, get_mfcc):
         # contains (sum1, sum2, n)
-        spec_sum1, spec_sum2 = 0, 0
-        mspec_sum1, mspec_sum2 = 0, 0
-        mfcc_sum1, mfcc_sum2 = 0, 0
+        path = dataset.path
+        spec_sum1, spec_sum2 = 0., 0.
+        mspec_sum1, mspec_sum2 = 0., 0.
+        mfcc_sum1, mfcc_sum2 = 0., 0.
         n = 0
         indices = []
         for spec, mspec, mfcc, index in results:
@@ -344,12 +344,13 @@ class SpeechFeature(FeatureRecipe):
                 # name, start, end
                 indices.append([name, int(n), int(n + size)])
                 n += size
+        # ====== saving indices ====== #
+        with open(os.path.join(path, 'indices.csv'), 'w') as f:
+            for name, start, end in indices:
+                f.write('%s %d %d\n' % (name, start, end))
 
         # ====== helper ====== #
         def save_mean_std(sum1, sum2, n, name, dataset):
-            import cPickle
-            cPickle.dump(sum1, open('/Users/trungnt13/tmp/sum1', 'w'))
-            cPickle.dump(sum2, open('/Users/trungnt13/tmp/sum2', 'w'))
             mean = sum1 / n
             std = np.sqrt(sum2 / n - mean**2)
             assert not np.any(np.isnan(mean)), 'Mean contains NaN'
@@ -365,12 +366,7 @@ class SpeechFeature(FeatureRecipe):
             save_mean_std(mspec_sum1, mspec_sum2, n, 'mspec', dataset)
         if get_mfcc:
             save_mean_std(mfcc_sum1, mfcc_sum2, n, 'mfcc', dataset)
-        path = dataset.path
         dataset.close()
-        # ====== saving indices ====== #
-        with open(os.path.join(path, 'indices.csv'), 'w') as f:
-            for name, start, end in indices:
-                f.write('%s %d %d\n' % (name, start, end))
         return {'dataset': path}
 
 
