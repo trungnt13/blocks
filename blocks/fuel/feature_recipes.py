@@ -28,23 +28,10 @@ try: # this library may not available
 except:
     pass
 
-support_delimiter = re.compile('[\s;,.:]')
-
 
 # ===========================================================================
 # Speech features
 # ===========================================================================
-def _auto_detect_seperator(f):
-    f = open(f, 'r')
-    l = f.readline().replace('\n', '')
-    f.close()
-    search = support_delimiter.search(l)
-    if search is None:
-        raise ValueError("Only support for following delimiters \s;:,.")
-    delimiter = l[search.start():search.end()]
-    return delimiter
-
-
 def _read_transcript_file(file_path):
     transcripter = None
     if '.TextGrid' in file_path:
@@ -196,8 +183,7 @@ class SpeechFeature(FeatureRecipe):
                 file_list = [(os.path.basename(i), i, 0.0, -1.0)
                              for i in file_list] # segment, path, start, end
             else: # csv file
-                sep = _auto_detect_seperator(segments)
-                file_list = np.genfromtxt(segments, dtype='str', delimiter=sep)
+                file_list = np.genfromtxt(segments, dtype=str, delimiter=' ')
         elif isinstance(segments, (tuple, list)):
             if isinstance(segments[0], str): # just a list of path to file
                 file_list = [(os.path.basename(i), os.path.abspath(i), 0.0, -1.0)
