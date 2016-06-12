@@ -6,6 +6,7 @@ from __future__ import print_function, division, absolute_import
 
 import os
 import re
+import warnings
 from collections import defaultdict
 from six.moves import zip, range
 
@@ -158,6 +159,8 @@ class SpeechFeature(FeatureRecipe):
         return log-mel filterbank
     get_mfcc : bool
         return mfcc features
+    robust : bool
+        run in robust mode, auto ignore error files
 
     Example
     -------
@@ -168,7 +171,8 @@ class SpeechFeature(FeatureRecipe):
                  win=0.025, shift=0.01, n_filters=40, n_ceps=13,
                  downsample='sinc_best', delta_order=2, energy=True, vad=True,
                  datatype='mmap', dtype='float32',
-                 get_spec=False, get_mspec=True, get_mfcc=False):
+                 get_spec=False, get_mspec=True, get_mfcc=False,
+                 robust=True):
         super(SpeechFeature, self).__init__('SpeechFeatures')
 
     def initialize(self, mr):
@@ -220,7 +224,7 @@ class SpeechFeature(FeatureRecipe):
                       delta_order=self.delta_order, energy=self.energy,
                       vad=self.vad, dtype=self.dtype,
                       get_spec=self.get_spec, get_mspec=self.get_mspec,
-                      get_mfcc=self.get_mfcc)
+                      get_mfcc=self.get_mfcc, robust=self.robust)
         # create reduce
         self.wrap_reduce(dataset=dataset, datatype=datatype)
         # create finalize
@@ -230,39 +234,48 @@ class SpeechFeature(FeatureRecipe):
     @staticmethod
     def _map(f, n_filters=40, n_ceps=13, fs=8000, downsample='sinc_best',
              win=0.025, shift=0.01, delta_order=2, energy=True, vad=True,
-             dtype='float32', get_spec=False, get_mspec=True, get_mfcc=False):
+             dtype='float32', get_spec=False, get_mspec=True, get_mfcc=False,
+             robust=True):
         '''
         Return
         ------
         (name, features, vad, sum1, sum2)
 
         '''
-        audio_path, segments = f
-        # load audio data
-        s, _ = speech.read(audio_path)
-        # check frequency for downsampling (if necessary)
-        if _ is not None:
-            if fs is not None and fs != _:
-                if fs < _: # downsample
-                    s = resample(s, fs / _, 'sinc_best')
+        try:
+            audio_path, segments = f
+            # load audio data
+            s, _ = speech.read(audio_path)
+            # check frequency for downsampling (if necessary)
+            if _ is not None:
+                if fs is not None and fs != _:
+                    if fs < _: # downsample
+                        s = resample(s, fs / _, 'sinc_best')
+                    else:
+                        raise ValueError('Cannot perform upsample from frequency: '
+                                         '{}Hz to {}Hz'.format(_, fs))
                 else:
-                    raise ValueError('Cannot perform upsample from frequency: '
-                                     '{}Hz to {}Hz'.format(_, fs))
+                    fs = _
+            N = len(s)
+            features = []
+            for name, start, end, channel in segments:
+                start = int(float(start) * fs)
+                end = int(N if end < 0 else end * fs)
+                data = s[start:end, channel] if s.ndim > 1 else s[start:end]
+                tmp = speech_features_extraction(data.ravel(), fs=fs,
+                    n_filters=n_filters, n_ceps=n_ceps,
+                    win=win, shift=shift, delta_order=delta_order,
+                    energy=energy, vad=vad, dtype=dtype,
+                    get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
+                features.append((name,) + tmp)
+            return features
+        except Exception, e:
+            msg = 'Ignore file: %s, error: %s' % (f[0], str(e))
+            warnings.warn(msg)
+            if robust:
+                return None
             else:
-                fs = _
-        N = len(s)
-        features = []
-        for name, start, end, channel in segments:
-            start = int(float(start) * fs)
-            end = int(N if end < 0 else end * fs)
-            data = s[start:end, channel] if s.ndim > 1 else s[start:end]
-            tmp = speech_features_extraction(data.ravel(), fs=fs,
-                n_filters=n_filters, n_ceps=n_ceps,
-                win=win, shift=shift, delta_order=delta_order,
-                energy=energy, vad=vad, dtype=dtype,
-                get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
-            features.append((name,) + tmp)
-        return features
+                raise e
 
     @staticmethod
     def _reduce(results, dataset, datatype):

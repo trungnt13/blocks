@@ -331,6 +331,7 @@ class MapReduce(object):
                 else: # execute sequently
                     results = [map_func(i) for i in j]
                 # reduce all the results
+                results = [i for i in results if i is not None]
                 results = (reduce_func(results)
                            if reduce_func is not None else None)
                 progbar.add(len(j)) # update progress-bar
