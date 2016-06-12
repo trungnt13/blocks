@@ -11,9 +11,7 @@ from collections import defaultdict
 from six.moves import zip, range
 
 import numpy as np
-from .data import Hdf5Data, MmapData
-from .dataset import Dataset
-from .features import FeatureRecipe
+import sidekit
 
 from blocks.utils import get_all_files, as_tuple, play_audio
 from blocks.utils.decorators import autoinit
@@ -21,9 +19,12 @@ from blocks.preprocessing.textgrid import TextGrid
 from blocks.preprocessing import speech
 from blocks.preprocessing.preprocess import normalize, segment_axis
 
+from .data import Hdf5Data, MmapData
+from .dataset import Dataset
+from .features import FeatureRecipe
+
 try: # this library may not available
     from scikits.samplerate import resample
-    import sidekit
 except:
     pass
 
