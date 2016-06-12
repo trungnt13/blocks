@@ -34,7 +34,7 @@ __all__ = [
 # ===========================================================================
 # Const
 # ===========================================================================
-BLOCK_SIZE = 200 * 1024 * 1024 # in bytes
+BLOCK_SIZE = 300 * 1024 * 1024 # in bytes
 
 
 # ===========================================================================
@@ -262,14 +262,17 @@ class Data(object):
         if idx[-1] < end:
             idx.append(end)
         idx = list(zip(idx, idx[1:]))
-        if seed is not None:
-            np.random.seed(seed)
-            np.random.shuffle(idx)
+
+        rand = np.random.RandomState(seed=seed) if seed is not None else None
+        if rand is not None:
+            rand.shuffle(idx)
 
         yield None # this dummy return to make everything initialized
-        for i in idx:
-            start, end = i
-            yield self._transformer(self._data[start:end])
+        for start, end in idx:
+            x = self._transformer(self._data[start:end])
+            if rand is not None:
+                x = x[rand.permutation(x.shape[0])]
+            yield x
 
     def __iter__(self):
         it = self.__iter()
