@@ -13,6 +13,10 @@ from six.moves.urllib.request import urlopen
 from six.moves.urllib.error import URLError, HTTPError
 import tarfile
 
+try:
+    from numba import jit, autojit, vectorize, guvectorize
+except:
+    pass
 import numpy
 import six
 import theano
@@ -899,28 +903,22 @@ def get_file(fname, origin, untar=False):
     return fpath
 
 
+# @autojit
 def get_all_files(path, filter_func=None):
     ''' Recurrsively get all files in the given path '''
     file_list = []
-    q = queue()
-    # init queue
     if os.access(path, os.R_OK):
         for p in os.listdir(path):
-            q.put(os.path.join(path, p))
-    # process
-    while not q.empty():
-        p = q.pop()
-        if os.path.isdir(p):
-            if os.access(p, os.R_OK):
-                for i in os.listdir(p):
-                    q.put(os.path.join(p, i))
-        else:
-            if filter_func is not None and not filter_func(p):
-                continue
-            # remove dump files of Mac
-            if '.DS_STORE' in p or '._' == os.path.basename(p)[:2]:
-                continue
-            file_list.append(p)
+            p = os.path.join(path, p)
+            if os.path.isdir(p):
+                file_list += get_all_files(p, filter_func)
+            else:
+                if filter_func is not None and not filter_func(p):
+                    continue
+                # remove dump files of Mac
+                if '.DS_STORE' in p or '._' == os.path.basename(p)[:2]:
+                    continue
+                file_list.append(p)
     return file_list
 
 

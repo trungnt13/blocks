@@ -272,7 +272,7 @@ def make_fbank(file_lists, outpath, segments=None, utt2spk="",
     sample_frequency=16000, frame_length=25, frame_shift=10, window_type="hamming",
     num_mel_bins=40, use_log_fbank=True, preemphasis_coefficient=0.97,
     high_freq=-200, low_freq=20, channel=-1, dither=1, raw_energy=True,
-    remove_dc_offset=True, min_duration=0, snip_edges=True, subtract_mean=False,
+remove_dc_offset=True, min_duration=0, snip_edges=True, subtract_mean=False,
     use_energy=True, energy_floor=0,
     vtln_high=-500, vtln_low=100, vtln_map="", vtln_warp=1):
     """
@@ -453,7 +453,7 @@ def make_fbank(file_lists, outpath, segments=None, utt2spk="",
         copyfile(os.path.join('utils/', 'parse_options.sh'), 'parse_options.sh')
         with _remove_compression('steps/make_fbank.sh'):
             subprocess.call('steps/make_fbank.sh ' +
-                            '--nj %d ' % (get_cpu_count() * 3) +
+                            '--nj %d ' % 1 +
                             '--cmd utils/run.pl ' +
                             '--fbank-config %s ' % config_path +
                             ' data data ' + outpath, shell=True)

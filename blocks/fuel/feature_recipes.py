@@ -22,6 +22,7 @@ from blocks.preprocessing.preprocess import normalize, segment_axis
 
 try: # this library may not available
     from scikits.samplerate import resample
+    import sidekit
 except:
     pass
 
@@ -31,18 +32,6 @@ support_delimiter = re.compile('[\s;,.:]')
 # ===========================================================================
 # Speech features
 # ===========================================================================
-def _compute_delta(s, delta1, delta2):
-    _ = [s]
-    d1, d2 = None, None
-    if delta1:
-        d1 = speech.compute_delta(s, order=1)
-        if delta2:
-            d2 = speech.compute_delta(s, order=2)
-    if d1 is not None: _.append(d1)
-    if d2 is not None: _.append(d2)
-    return np.concatenate(_, 0)
-
-
 def _auto_detect_seperator(f):
     f = open(f, 'r')
     l = f.readline().replace('\n', '')
@@ -66,45 +55,64 @@ def _read_transcript_file(file_path):
     return transcripter
 
 
-def speech_features_extraction(s, fs,
-             n_fft, n_filters, n_ceps, win, shift,
-             delta1, delta2, energy,
-             vad, feature_type, dtype):
+def _append_energy_and_deltas(s, energy, delta_order):
+    # s.shape = [Time, Dimension]
+    if s is None:
+        return None
+    if energy is not None:
+        s = np.hstack((s, energy[:, None]))
+    # compute delta
+    if delta_order > 0:
+        deltas = speech.compute_delta(s.T, order=delta_order)
+        # tranpose back to [Time, Dim]
+        s = np.hstack([s] + [i.T for i in deltas])
+    return s
+
+
+def speech_features_extraction(s, fs, n_filters, n_ceps, win, shift,
+                               delta_order, energy, vad, dtype,
+                               get_spec, get_mspec, get_mfcc):
+    """ return: spec, mspec, and mfcc """
+    if s.ndim >= 2:
+        raise Exception('Speech Feature Extraction only accept 1-D signal')
+    # speech features, shape: [Time, Dimension]
+    mfcc, logEnergy, spec, mspec = sidekit.frontend.mfcc(
+        s, lowfreq=64, maxfreq=fs // 2, nlogfilt=n_filters,
+        nwin=win, shift=shift, nceps=n_ceps,
+        get_spec=get_spec, get_mspec=get_mspec)
+    mfcc = mfcc if get_mfcc else None
     # VAD
     vad_idx = None
     if vad:
-        import sidekit
-        vad_idx = sidekit.frontend.vad.vad_snr(s, 30,
-            fs=fs, shift=shift, nwin=n_fft)
-    # speech features
-    s = speech.spectrogram(s, n_fft=n_fft, hop_length=int(shift * fs),
-        win_length=int(win * fs), center=False)
-    if feature_type != 'spec':
-        logEnergy = speech.compute_logenergy(s) if energy else None
-        s = speech.melspectrogram(S=s, sr=fs, n_mels=n_filters,
-            fmin=0., fmax=fs // 2, center=False)
-        s = speech.logamplitude(s) # LOG-mel filterbanks
-        if feature_type == 'mfcc':
-            s = speech.mfcc(S=s, sr=fs, n_mfcc=n_ceps)
-        if logEnergy is not None: # append log-energy
-            s = np.vstack((s, logEnergy[None, :]))
-        s = _compute_delta(s, delta1, delta2)
-    # transpose into (T, D)
-    s = s.T
-    # validate vad shape
-    if vad_idx is not None:
-        assert vad_idx.shape[0] == s.shape[0], \
-        'VAD and features mismatch: {} != {}'
-        ''.format(vad_idx.shape[0], s.shape[0])
-        vad = vad_idx.astype('int8')
-    else:
-        vad = None
-    # type check
-    s = s.astype(dtype)
+        distribNb, nbTrainIt = 8, 12
+        if isinstance(vad, (tuple, list)):
+            distribNb, nbTrainIt = vad
+        # vad_idx = sidekit.frontend.vad.vad_snr(s, threshold,
+        # fs=fs, shift=shift, nwin=int(fs * win)).astype('int8')
+        vad_idx = sidekit.frontend.vad.vad_energy(logEnergy,
+            distribNb=distribNb, nbTrainIt=nbTrainIt).astype('int8')
+    # Energy
+    logEnergy = logEnergy if energy else None
+
+    # everything is (T, D)
+    mfcc = (_append_energy_and_deltas(mfcc, logEnergy, delta_order)
+            if mfcc is not None else None)
+    # we don't calculate deltas for spectrogram features
+    spec = (_append_energy_and_deltas(spec, logEnergy, 0)
+            if spec is not None else None)
+    mspec = (_append_energy_and_deltas(mspec, logEnergy, delta_order)
+            if mspec is not None else None)
     # normalization
-    sum1 = np.sum(s, axis=0, dtype='float64')
-    sum2 = np.sum(s**2, axis=0, dtype='float64')
-    return s, vad, sum1, sum2
+    mfcc = (mfcc.astype(dtype),
+            np.sum(mfcc, axis=0, dtype='float64'),
+            np.sum(mfcc**2, axis=0, dtype='float64')) if mfcc is not None else None
+    spec = (spec.astype(dtype),
+            np.sum(spec, axis=0, dtype='float64'),
+            np.sum(spec**2, axis=0, dtype='float64')) if spec is not None else None
+    mspec = (mspec.astype(dtype),
+             np.sum(mspec, axis=0, dtype='float64'),
+             np.sum(mspec**2, axis=0, dtype='float64')) if mspec is not None else None
+    return spec, mspec, mfcc, vad_idx
 
 
 class SpeechFeature(FeatureRecipe):
@@ -114,6 +122,28 @@ class SpeechFeature(FeatureRecipe):
 
     Parameters
     ----------
+    segments : path, list
+        if path, directory of all audio file, or segment csv file in format
+            name                     path          start end
+        sw02001-A_000098-001156 /path/to/sw02001-A  0.0  -1
+        sw02001-A_001980-002131 /path/to/sw02001-A  0.0  -1
+    win : float
+        frame or window length in second
+    shift : float
+        frame or window, or hop length in second
+    n_filters : int
+        number of log-mel filter banks
+    n_ceps : int
+        number of cepstrum for MFCC
+    delta_order : int
+        compute deltas featues (e.g 2 means delta1 and delta2)
+    energy : bool
+        if True, append log energy to features
+    vad : bool, tuple or list
+        save Voice Activities Detection mask
+        if tuple or list provodied, it must represents (distribNb, nbTrainIt)
+        where distribNb is number of distribution, nbTrainIt is number of iteration
+        (default: distribNb=8, nbTrainIt=12)
     downsample : str
         One of the following algorithms:
         sinc_medium : Band limited sinc interpolation, medium quality, 121dB SNR, 90% BW.
@@ -122,86 +152,91 @@ class SpeechFeature(FeatureRecipe):
         zero_order_hold : Zero order hold interpolator, very fast, poor quality.
         sinc_best : Band limited sinc interpolation, best quality, 145dB SNR, 96% BW.
         (default: best quality algorithm is used)
-
+    get_spec : bool
+        return spectrogram
+    get_mspec : bool
+        return log-mel filterbank
+    get_mfcc : bool
+        return mfcc features
 
     Example
     -------
-    >>> spec = SpeechFeature('/Volumes/backup/data/DigiSami/preprocessed',
-    ...                      dataset_path,
-    ...                      fs=8000, win=0.025, shift=0.01, audio_ext='.wav',
-    ...                      n_filters=40, n_fft=512, feature_type='filt',
-    ...                      local_normalize=False, vad=True,
-    ...                      delta1=True, delta2=True,
-    ...                      datatype='mem')
-
     '''
     FEATURE_TYPES = ['spec', 'mfcc', 'fbank']
 
     @autoinit
-    def __init__(self, segments, output, audio_ext=None,
-                 n_fft=256, n_filters=40, n_ceps=13,
-                 fs=8000, downsample='sinc_best', win=0.025, shift=0.01,
-                 delta1=True, delta2=True, energy=True,
-                 vad=True, feature_type='spec',
-                 datatype='mmap', dtype='float32'):
-        name = 'Extract %s ' % feature_type
-        super(SpeechFeature, self).__init__(name)
+    def __init__(self, segments, output, audio_ext=None, fs=8000,
+                 win=0.025, shift=0.01, n_filters=40, n_ceps=13,
+                 downsample='sinc_best', delta_order=2, energy=True, vad=True,
+                 datatype='mmap', dtype='float32',
+                 get_spec=False, get_mspec=True, get_mfcc=False):
+        super(SpeechFeature, self).__init__('SpeechFeatures')
 
     def initialize(self, mr):
+        if not self.get_spec and not self.get_mspec and not self.get_mfcc:
+            raise Exception('You must specify which features you want: spectrogram'
+                            'filter-banks, or MFCC.')
         # ====== super function should be called at the beginning ====== #
-        if all(i not in self.feature_type for i in SpeechFeature.FEATURE_TYPES):
-            raise ValueError("Only accept one of following feature types:"
-                             "'spec', 'mfcc', 'fbank'.")
-
         segments = self.segments
         output = self.output
         audio_ext = as_tuple('' if self.audio_ext is None else self.audio_ext, 1, str)
         datatype = self.datatype
 
         # ====== load jobs ====== #
-        if not os.path.exists(segments):
-            raise ValueError('Path to segments must exists, however, '
-                             'exist(segments)={}'.format(os.path.exists(segments)))
-        if os.path.isdir(segments):
-            file_list = get_all_files(segments)
-            file_list = [(os.path.basename(i), i, 0.0, -1.0) for i in file_list] # segment, path, start, end
-        else: # csv file
-            sep = _auto_detect_seperator(segments)
-            file_list = np.genfromtxt(segments, dtype='str', delimiter=sep)
-            segments = segments.replace(os.path.basename(segments), '')
-            file_list = map(lambda x:
-                            (x[0], os.path.join(segments, x[1]), float(x[2]), float(x[3]))
-                            if not os.path.exists(x[1])
-                            else x,
-                            file_list)
+        if isinstance(segments, str):
+            if not os.path.exists(segments):
+                raise ValueError('Path to segments must exists, however, '
+                                 'exist(segments)={}'.format(os.path.exists(segments)))
+            if os.path.isdir(segments):
+                file_list = get_all_files(segments)
+                file_list = [(os.path.basename(i), i, 0.0, -1.0)
+                             for i in file_list] # segment, path, start, end
+            else: # csv file
+                sep = _auto_detect_seperator(segments)
+                file_list = np.genfromtxt(segments, dtype='str', delimiter=sep)
+                segments = segments.replace(os.path.basename(segments), '')
+                file_list = map(lambda x:
+                                (x[0], os.path.join(segments, x[1]), float(x[2]), float(x[3]))
+                                if not os.path.exists(x[1])
+                                else x,
+                                file_list)
+        elif isinstance(segments, (tuple, list)):
+            if isinstance(segments[0], str): # just a list of path to file
+                file_list = [(os.path.basename(i), os.path.abspath(i), 0.0, -1.0)
+                             for i in segments]
+            elif isinstance(segments[0], (tuple, list)):
+                if len(segments[0]) != 4:
+                    raise Exception('segments must contain information in following for:'
+                                    '[name] [path] [start] [end]')
+                file_list = segments
         # filter using support audio extension
         file_list = [f for f in file_list if any(ext in f[1] for ext in audio_ext)]
         # convert into audio_path -> segment
         self.jobs = defaultdict(list)
         for segment, file, start, end in file_list:
             self.jobs[file].append((segment, start, end))
-        self.jobs = self.jobs.items()[:100]
+        self.jobs = self.jobs.items()
 
         # ====== check output ====== #
         dataset = Dataset(output)
         # create map_func
-        self.wrap_map(n_fft=self.n_fft, n_filters=self.n_filters, n_ceps=self.n_ceps,
+        self.wrap_map(n_filters=self.n_filters, n_ceps=self.n_ceps,
                       fs=self.fs, downsample=self.downsample,
                       win=self.win, shift=self.shift,
-                      delta1=self.delta1, delta2=self.delta2, energy=self.energy,
-                      vad=self.vad, feature_type=self.feature_type, dtype=self.dtype)
+                      delta_order=self.delta_order, energy=self.energy,
+                      vad=self.vad, dtype=self.dtype,
+                      get_spec=self.get_spec, get_mspec=self.get_mspec,
+                      get_mfcc=self.get_mfcc)
         # create reduce
-        self.wrap_reduce(dataset=dataset, datatype=datatype, dataname=self.feature_type)
+        self.wrap_reduce(dataset=dataset, datatype=datatype)
         # create finalize
-        self.wrap_finalize(dataset=dataset)
+        self.wrap_finalize(dataset=dataset, get_spec=self.get_spec,
+                           get_mspec=self.get_mspec, get_mfcc=self.get_mfcc)
 
     @staticmethod
-    def _map(f, n_fft=256, n_filters=40, n_ceps=13,
-             fs=8000, downsample='sinc_best',
-             win=0.025, shift=0.01,
-             delta1=True, delta2=True, energy=True,
-             vad=True, feature_type='spec',
-             dtype='float32'):
+    def _map(f, n_filters=40, n_ceps=13, fs=8000, downsample='sinc_best',
+             win=0.025, shift=0.01, delta_order=2, energy=True, vad=True,
+             dtype='float32', get_spec=False, get_mspec=True, get_mfcc=False):
         '''
         Return
         ------
@@ -222,77 +257,121 @@ class SpeechFeature(FeatureRecipe):
             else:
                 fs = _
         N = len(s)
-        # clean the signal
-        s = speech.pre_emphasis(s, 0.97)
         features = []
         for name, start, end in segments:
             start = int(float(start) * fs)
             end = int(N if end < 0 else end * fs)
             data = s[start:end, :]
-            if len(data.shape) == 2: # 2 channel
-                x0 = speech_features_extraction(s[:, 0].ravel(), fs=fs,
-                    n_fft=n_fft, n_filters=n_filters, n_ceps=n_ceps,
-                    win=win, shift=shift, delta1=delta1, delta2=delta2,
-                    energy=energy, vad=vad, feature_type=feature_type, dtype=dtype)
-                x1 = speech_features_extraction(s[:, 1].ravel(), fs=fs,
-                    n_fft=n_fft, n_filters=n_filters, n_ceps=n_ceps,
-                    win=win, shift=shift, delta1=delta1, delta2=delta2,
-                    energy=energy, vad=vad, feature_type=feature_type, dtype=dtype)
-                features.append((name + '-0',) + x0)
-                features.append((name + '-1',) + x1)
-            else: # only 1 channel
-                x = speech_features_extraction(s.ravel(), fs=fs,
-                    n_fft=n_fft, n_filters=n_filters, n_ceps=n_ceps,
-                    win=win, shift=shift, delta1=delta1, delta2=delta2,
-                    energy=energy, vad=vad, feature_type=feature_type, dtype=dtype)
-                features.append((name,) + x)
+            # ====== 2 channels ====== #
+            if len(data.shape) == 2:
+                tmp = speech_features_extraction(s[:, 0].ravel(), fs=fs,
+                    n_filters=n_filters, n_ceps=n_ceps,
+                    win=win, shift=shift, delta_order=delta_order,
+                    energy=energy, vad=vad, dtype=dtype,
+                    get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
+                features.append((name + '-A',) + tmp)
+                tmp = speech_features_extraction(s[:, 1].ravel(), fs=fs,
+                    n_filters=n_filters, n_ceps=n_ceps,
+                    win=win, shift=shift, delta_order=delta_order,
+                    energy=energy, vad=vad, dtype=dtype,
+                    get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
+                features.append((name + '-B',) + tmp)
+            # ====== Only 1 channel ====== #
+            else:
+                tmp = speech_features_extraction(s.ravel(), fs=fs,
+                    n_filters=n_filters, n_ceps=n_ceps,
+                    win=win, shift=shift, delta_order=delta_order,
+                    energy=energy, vad=vad, dtype=dtype,
+                    get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
+                features.append((name,) + tmp)
         return features
 
     @staticmethod
-    def _reduce(results, dataset, datatype, dataname):
-        # contains (name, features, vad, sum1, sum2)
+    def _reduce(results, dataset, datatype):
+        # contains (name, spec, mspec, mfcc, vad)
         index = []
-        sum1, sum2 = 0, 0
+        spec_sum1, spec_sum2 = 0, 0
+        mspec_sum1, mspec_sum2 = 0, 0
+        mfcc_sum1, mfcc_sum2 = 0, 0
         for r in results:
-            for name, features, vad, s1, s2 in r:
-                index.append([name, features.shape[0]])
-                # features
-                dataset.get_data(dataname, dtype=features.dtype,
-                                 shape=features.shape, datatype=datatype,
-                                 value=features)
-                if vad is not None: # vad
-                    dataset.get_data(dataname + '_vad', dtype=vad.dtype,
-                                     shape=vad.shape, datatype=datatype, value=vad)
-                # just pass sum1, sum2, len(x) for finalize
-                sum1 += s1
-                sum2 += s2
-        return (sum1, sum2, index)
+            for name, spec, mspec, mfcc, vad in r:
+                if spec is not None:
+                    X, sum1, sum2 = spec
+                    dataset.get_data('spec', dtype=X.dtype, shape=X.shape,
+                                     datatype=datatype, value=X)
+                    spec_sum1 += sum1; spec_sum2 += sum2
+                if mspec is not None:
+                    X, sum1, sum2 = mspec
+                    dataset.get_data('fbank', dtype=X.dtype, shape=X.shape,
+                                     datatype=datatype, value=X)
+                    mspec_sum1 += sum1; mspec_sum2 += sum2
+                if mfcc is not None:
+                    X, sum1, sum2 = mfcc
+                    dataset.get_data('mfcc', dtype=X.dtype, shape=X.shape,
+                                     datatype=datatype, value=X)
+                    mfcc_sum1 += sum1; mfcc_sum2 += sum2
+                # index
+                index.append([name, X.shape[0]])
+                # VAD
+                if vad is not None:
+                    assert vad.shape[0] == X.shape[0],\
+                        'VAD mismatch features shape: %d != %d' % (vad.shape[0], X.shape[0])
+                    dataset.get_data('vad', dtype=vad.dtype, shape=vad.shape,
+                                 datatype=datatype, value=vad)
+        return ((spec_sum1, spec_sum2),
+                (mspec_sum1, mspec_sum2),
+                (mfcc_sum1, mfcc_sum2), index)
 
     @staticmethod
-    def _finalize(results, dataset):
+    def _finalize(results, dataset, get_spec, get_mspec, get_mfcc):
         # contains (sum1, sum2, n)
-        sum1, sum2, n = 0, 0, 0
+        spec_sum1, spec_sum2 = 0, 0
+        mspec_sum1, mspec_sum2 = 0, 0
+        mfcc_sum1, mfcc_sum2 = 0, 0
+        n = 0
         indices = []
-        for s1, s2, index in results:
-            sum1 += s1
-            sum2 += s2
+        for spec, mspec, mfcc, index in results:
+            # spec
+            spec_sum1 += spec[0]
+            spec_sum2 += spec[1]
+            # mspec
+            mspec_sum1 += mspec[0]
+            mspec_sum2 += mspec[1]
+            # mfcc
+            mfcc_sum1 += mfcc[0]
+            mfcc_sum2 += mfcc[1]
             for name, size in index:
                 # name, start, end
                 indices.append([name, int(n), int(n + size)])
                 n += size
-        mean = sum1 / n
-        std = np.sqrt((sum2 - sum1**2 / n) / n)
-        assert not np.any(np.isnan(mean)), 'Mean contains NaN'
-        assert not np.any(np.isnan(std)), 'Std contains NaN'
-        dataset.get_data('mean', dtype=mean.dtype, shape=mean.shape, value=mean)
-        dataset.get_data('std', dtype=std.dtype, shape=std.shape, value=std)
+
+        # ====== helper ====== #
+        def save_mean_std(sum1, sum2, n, name, dataset):
+            import cPickle
+            cPickle.dump(sum1, open('/Users/trungnt13/tmp/sum1', 'w'))
+            cPickle.dump(sum2, open('/Users/trungnt13/tmp/sum2', 'w'))
+            mean = sum1 / n
+            std = np.sqrt(sum2 / n - mean**2)
+            assert not np.any(np.isnan(mean)), 'Mean contains NaN'
+            assert not np.any(np.isnan(std)), 'Std contains NaN'
+            dataset.get_data(name + '_mean', dtype=mean.dtype,
+                             shape=mean.shape, value=mean)
+            dataset.get_data(name + '_std', dtype=std.dtype,
+                             shape=std.shape, value=std)
+        # ====== save mean and std ====== #
+        if get_spec:
+            save_mean_std(spec_sum1, spec_sum2, n, 'spec', dataset)
+        if get_mspec:
+            save_mean_std(mspec_sum1, mspec_sum2, n, 'mspec', dataset)
+        if get_mfcc:
+            save_mean_std(mfcc_sum1, mfcc_sum2, n, 'mfcc', dataset)
         path = dataset.path
         dataset.close()
         # ====== saving indices ====== #
         with open(os.path.join(path, 'indices.csv'), 'w') as f:
             for name, start, end in indices:
-                f.write('%s %d %d \n' % (name, start, end))
-        return {'dataset': path, 'mean': mean, 'std': std}
+                f.write('%s %d %d\n' % (name, start, end))
+        return {'dataset': path}
 
 
 # ===========================================================================

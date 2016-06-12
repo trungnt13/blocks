@@ -12,7 +12,7 @@ from blocks import fuel
 
 from .features import *
 from .helpers import *
-from .io import *
+from .kaldi_io import *
 
 # ===========================================================================
 # check KALDI_PATH

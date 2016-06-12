@@ -178,6 +178,14 @@ class Dataset(object):
 
     # ==================== manipulate data ==================== #
     def get_data(self, name, dtype=None, shape=None, datatype='mmap', value=None):
+        """
+        Parameters
+        ----------
+        value : np.ndarray
+            if this is the first time Data is initialized, we assign Data to
+            the value
+            otherwise, we append value to data.
+        """
         datatype = '.' + datatype.lower() if '.' not in datatype else datatype.lower()
         if datatype not in MmapData.SUPPORT_EXT and \
            datatype not in Hdf5Data.SUPPORT_EXT:
