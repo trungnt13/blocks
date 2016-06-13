@@ -69,6 +69,9 @@ def speech_features_extraction(s, fs, n_filters, n_ceps, win, shift,
         s, fs=fs, lowfreq=64, maxfreq=fs // 2, nlogfilt=n_filters,
         nwin=win, shift=shift, nceps=n_ceps,
         get_spec=get_spec, get_mspec=get_mspec)
+    # any nan value in MFCC ignore the whole file
+    if np.any(np.isnan(mfcc)):
+        return None
     mfcc = mfcc if get_mfcc else None
     # VAD
     vad_idx = None
@@ -254,7 +257,11 @@ class SpeechFeature(FeatureRecipe):
                     win=win, shift=shift, delta_order=delta_order,
                     energy=energy, vad=vad, dtype=dtype,
                     get_spec=get_spec, get_mspec=get_mspec, get_mfcc=get_mfcc)
-                features.append((name,) + tmp)
+                if tmp is not None:
+                    features.append((name,) + tmp)
+                else:
+                    msg = 'Ignore segments: %s, error: NaN values' % name
+                    warnings.warn(msg)
             return features
         except Exception, e:
             msg = 'Ignore file: %s, error: %s' % (f[0], str(e))
@@ -272,6 +279,7 @@ class SpeechFeature(FeatureRecipe):
         spec_sum1, spec_sum2 = 0., 0.
         mspec_sum1, mspec_sum2 = 0., 0.
         mfcc_sum1, mfcc_sum2 = 0., 0.
+        n = 0
         for r in results:
             for name, spec, mspec, mfcc, vad in r:
                 if spec is not None:
@@ -279,24 +287,28 @@ class SpeechFeature(FeatureRecipe):
                     dataset.get_data('spec', dtype=X.dtype, shape=X.shape,
                                      datatype=datatype, value=X)
                     spec_sum1 += sum1; spec_sum2 += sum2
+                    n = X.shape[0]; del X
                 if mspec is not None:
                     X, sum1, sum2 = mspec
                     dataset.get_data('mspec', dtype=X.dtype, shape=X.shape,
                                      datatype=datatype, value=X)
                     mspec_sum1 += sum1; mspec_sum2 += sum2
+                    n = X.shape[0]; del X
                 if mfcc is not None:
                     X, sum1, sum2 = mfcc
                     dataset.get_data('mfcc', dtype=X.dtype, shape=X.shape,
                                      datatype=datatype, value=X)
                     mfcc_sum1 += sum1; mfcc_sum2 += sum2
+                    n = X.shape[0]; del X
                 # index
-                index.append([name, X.shape[0]])
+                index.append([name, n])
                 # VAD
                 if vad is not None:
-                    assert vad.shape[0] == X.shape[0],\
+                    assert vad.shape[0] == n,\
                         'VAD mismatch features shape: %d != %d' % (vad.shape[0], X.shape[0])
                     dataset.get_data('vad', dtype=vad.dtype, shape=vad.shape,
                                  datatype=datatype, value=vad)
+                    del vad
         return ((spec_sum1, spec_sum2),
                 (mspec_sum1, mspec_sum2),
                 (mfcc_sum1, mfcc_sum2), index)
