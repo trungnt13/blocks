@@ -262,6 +262,7 @@ class SpeechFeature(FeatureRecipe):
             if robust:
                 return None
             else:
+                import traceback; traceback.print_exc()
                 raise e
 
     @staticmethod
