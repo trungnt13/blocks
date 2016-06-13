@@ -153,7 +153,6 @@ class Dataset(object):
             size_bytes += size * n
         return size_bytes / 1024. / 1024.
 
-    @property
     def keys(self):
         '''
         Return

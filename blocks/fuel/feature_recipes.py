@@ -358,7 +358,8 @@ class SpeechFeature(FeatureRecipe):
             save_mean_std(mspec_sum1, mspec_sum2, n, 'mspec', dataset)
         if get_mfcc:
             save_mean_std(mfcc_sum1, mfcc_sum2, n, 'mfcc', dataset)
-        dataset.close()
+        dataset.flush()
+        # dataset.close()
         return {'dataset': path}
 
 
@@ -366,80 +367,65 @@ class SpeechFeature(FeatureRecipe):
 # General global normalization
 # ===========================================================================
 class Normalization(FeatureRecipe):
-
-    '''
-    Parameters
-    ----------
-    dataset_filter : function
-        input: [name,...],if None, select all dataset.
-        output: filtered jobs list
-
-    Example
-    -------
-    >>> norm = Normalization(dataset_path,
-    ...                      dataset_filter=lambda x: ('_vad' not in x and
-    ...                                                'mean' not in x and
-    ...                                                'std' not in x),
-    ...                      global_normalize=True, local_normalize=False)
-
-    '''
-
+    """ There are 2 schemes for organizing the data we support:
+    1. dataset = [indices.csv, data, data_mean, data_std, ...]
+    2. dataset = [data1, data2, data3, ..., mean, std]
+    """
     @autoinit
-    def __init__(self, dataset_path, dataset_filter=None,
-        global_normalize=True, local_normalize=False,
-        global_mean=None, global_std=None,
-        name='Normalization'):
-        super(Normalization, self).__init__(name)
+    def __init__(self, dataset, global_normalize=True, local_normalize=False):
+        super(Normalization, self).__init__('Normalization')
 
     def initialize(self, mr):
-        dataset_path = self.dataset_path
-        dataset_filter = self.dataset_filter
-
-        # load dataset
-        if not os.path.exists(dataset_path):
-            dataset = mr[dataset_path]
-            if isinstance(dataset, str):
-                dataset = Dataset(dataset)
+        dataset = self.dataset
+        if isinstance(dataset, str) and os.path.isdir(dataset):
+            dataset = Dataset(dataset)
+        elif isinstance(dataset, Dataset):
+            pass
         else:
-            dataset = Dataset(dataset_path)
-        if not isinstance(dataset, Dataset):
-            raise ValueError('Cannot load Dataset from path:{}'.format(dataset_path))
-        # try to search for mean and std value from previous task
-        if self.global_normalize:
-            mean = 'mean' if self.global_mean is None else self.global_mean
-            if isinstance(mean, str):
-                mean = mr[mean] if len(mr[mean]) > 0 else dataset.get_data(mean)[:]
+            raise Exception('Only a fuel.Dataset object or path to Dataset '
+                            'are supported.')
 
-            std = 'std' if self.global_std is None else self.global_std
-            if isinstance(std, str):
-                std = mr[std] if len(mr[std]) > 0 else dataset.get_data(std)[:]
-
-        # parse jobs_list
-        jobs = dataset.info
-        # filter dataset
-        if dataset_filter is not None and hasattr(dataset_filter, '__call__'):
-            jobs = [i for i in jobs if dataset_filter(i[0])]
-        self.seq_jobs = [i[:-1] for i in jobs if i[-1] == Hdf5Data]
-        self.jobs = [i[:-1] for i in jobs if i[-1] != Hdf5Data]
+        if 'indices.csv' not in os.listdir(dataset.path):
+            raise Exception('We require indices.cvs to query the position of '
+                            'all files.')
+        indices = os.path.join(dataset.path, 'indices.csv')
+        names = [n.replace('_mean', '')
+                 for n, t, s in dataset.keys()
+                 if '_mean' in n]
+        self.jobs = [(i, i + '_mean', i + '_std') for i in names]
 
         # ====== inititalize function ====== #
-        self.wrap_map(dataset=dataset,
+        self.wrap_map(dataset=dataset, indices=indices,
             global_normalize=self.global_normalize,
-            local_normalize=self.local_normalize,
-            mean=mean, std=std)
+            local_normalize=self.local_normalize)
         self.wrap_reduce()
 
     @staticmethod
-    def _map(f, dataset, global_normalize, local_normalize, mean, std):
-        # ====== global normalization ====== #
-        name, dtype, shape = f
-        x = dataset.get_data(name, dtype=dtype, shape=shape)
-        if global_normalize and mean is not None and std is not None:
-            x[:] = (x[:] - mean) / std
-        if local_normalize:
-            x[:] = (x[:] - x.mean(axis=0)) / x.std(axis=0)
-        x.flush()
-        dataset.close(f)
+    def _map(f, dataset, indices, global_normalize, local_normalize):
+        # ====== scheme 1 ====== #
+        if indices is not None:
+            indices = np.genfromtxt(indices, dtype=str, delimiter=' ')
+            data, mean, std = f
+            data = dataset[data]
+            mean = dataset[mean][:]
+            std = dataset[std][:]
+            for name, start, end in indices:
+                start = int(start); end = int(end)
+                x = data[start:end]
+                if local_normalize:
+                    data[start:end] = (x - x.mean(axis=0)) / x.std(axis=0)
+                if global_normalize:
+                    data[start:end] = (x - mean) / std
+            data.flush()
+        # ====== scheme 2 ====== #
+        else:
+            name, dtype, shape = f
+            x = dataset.get_data(name, dtype=dtype, shape=shape)
+            if global_normalize and mean is not None and std is not None:
+                x[:] = (x[:] - mean) / std
+            if local_normalize:
+                x[:] = (x[:] - x.mean(axis=0)) / x.std(axis=0)
+            x.flush()
 
     @staticmethod
     def _reduce(results):
