@@ -602,6 +602,10 @@ class functionable(object):
 def singleton(cls):
     ''' Singleton for class instance, all __init__ with same arguments return
     same instance
+
+    Note
+    ----
+    call .dispose() to fully destroy a Singeleton
     '''
     if not isinstance(cls, type):
         raise Exception('singleton decorator only accept class without any '
@@ -622,6 +626,13 @@ def singleton(cls):
 class Singleton(type):
     _instances = defaultdict(list) # (arguments, instance)
 
+    @staticmethod
+    def _dispose(instance):
+        clz = instance.__class__
+        Singleton._instances[clz] = [(args, ins)
+                                     for args, ins in Singleton._instances[clz]
+                                     if ins != instance]
+
     def __call__(cls, *args, **kwargs):
         spec = inspect.getargspec(cls.__init__)
         kwspec = {}
@@ -633,7 +644,7 @@ class Singleton(type):
         for i, j in kwspec.iteritems():
             if is_path(j):
                 kwspec[i] = os.path.abspath(j)
-
+        # check duplicate instances
         instances = Singleton._instances[cls]
         for arguments, instance in instances:
             if arguments == kwspec:
@@ -641,6 +652,8 @@ class Singleton(type):
         # not found old instance
         instance = super(Singleton, cls).__call__(*args, **kwargs)
         instances.append((kwspec, instance))
+        setattr(instance, 'dispose',
+                types.MethodType(Singleton._dispose, instance))
         return instance
 
 # Override the module's __call__ attribute

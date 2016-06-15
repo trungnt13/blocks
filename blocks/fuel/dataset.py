@@ -293,6 +293,10 @@ class Dataset(object):
         if name is None: # close all files
             for k in self._data_map.keys():
                 del self._data_map[k]
+            try:
+                self.dispose()
+            except:
+                pass
         else: # close a particular file
             for (n, d, s), j in self._data_map.items():
                 if name == n:
@@ -326,7 +330,7 @@ class Dataset(object):
         # ====== Find longest string ====== #
         longest_name = 0
         longest_shape = 0
-        longest_file = len(str('unloaded'))
+        longest_file = len(str('not loaded'))
         for (name, dtype, _), data in self._data_map.iteritems():
             shape = data.shape if hasattr(data, 'shape') else (data[0],) + _
             longest_name = max(len(name), longest_name)
@@ -340,7 +344,7 @@ class Dataset(object):
                       'file:%-' + str(longest_file) + 's')
         for (name, dtype, _), data in self._data_map.iteritems():
             shape = data.shape if hasattr(data, 'shape') else (data[0],) + _
-            path = data.path if isinstance(data, Data) else 'unloaded'
+            path = data.path if isinstance(data, Data) else 'not loaded'
             s.append(format_str % (name, dtype, shape, path))
         return '\n'.join(s)
 

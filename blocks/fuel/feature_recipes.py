@@ -359,7 +359,7 @@ class SpeechFeature(FeatureRecipe):
         if get_mfcc:
             save_mean_std(mfcc_sum1, mfcc_sum2, n, 'mfcc', dataset)
         dataset.flush()
-        # dataset.close()
+        dataset.close()
         return {'dataset': path}
 
 
@@ -385,14 +385,21 @@ class Normalization(FeatureRecipe):
             raise Exception('Only a fuel.Dataset object or path to Dataset '
                             'are supported.')
 
+        # ====== scheme 2 ====== #
         if 'indices.csv' not in os.listdir(dataset.path):
-            raise Exception('We require indices.cvs to query the position of '
-                            'all files.')
-        indices = os.path.join(dataset.path, 'indices.csv')
-        names = [n.replace('_mean', '')
-                 for n, t, s in dataset.keys()
-                 if '_mean' in n]
-        self.jobs = [(i, i + '_mean', i + '_std') for i in names]
+            indices = None
+            names = [n for n, t, s in dataset.keys()
+                     if 'mean' not in n and 'std' not in n]
+            mean = dataset['mean'][:]
+            std = dataset['std'][:]
+            self.jobs = [(i, mean, std) for i in names]
+        # ====== scheme 1 ====== #
+        else:
+            indices = os.path.join(dataset.path, 'indices.csv')
+            names = [n.replace('_mean', '')
+                     for n, t, s in dataset.keys()
+                     if '_mean' in n]
+            self.jobs = [(i, i + '_mean', i + '_std') for i in names]
 
         # ====== inititalize function ====== #
         self.wrap_map(dataset=dataset, indices=indices,
@@ -419,13 +426,14 @@ class Normalization(FeatureRecipe):
             data.flush()
         # ====== scheme 2 ====== #
         else:
-            name, dtype, shape = f
-            x = dataset.get_data(name, dtype=dtype, shape=shape)
-            if global_normalize and mean is not None and std is not None:
-                x[:] = (x[:] - mean) / std
+            raise Exception('Waiting for testing')
+            name, mean, std = f
+            data = dataset[name]
+            if global_normalize:
+                data[:] = (data[:] - mean) / std
             if local_normalize:
-                x[:] = (x[:] - x.mean(axis=0)) / x.std(axis=0)
-            x.flush()
+                data[:] = (data[:] - data.mean(axis=0)) / data.std(axis=0)
+            data.flush()
 
     @staticmethod
     def _reduce(results):
