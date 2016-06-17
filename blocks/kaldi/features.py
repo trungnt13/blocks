@@ -2,6 +2,7 @@ from __future__ import division, absolute_import
 
 import os
 import subprocess
+from multiprocessing import cpu_count
 from collections import defaultdict
 from shutil import copyfile, copytree
 from StringIO import StringIO
@@ -10,7 +11,7 @@ from contextlib import contextmanager
 import numpy as np
 
 from blocks.utils import (get_all_files, struct, as_tuple, exec_commands,
-                          TemporaryDirectory, get_cpu_count)
+                          TemporaryDirectory)
 from blocks.preprocessing import speech
 from blocks import fuel
 
@@ -262,7 +263,7 @@ def make_mfcc(file_lists, outpath, segments=None, utt2spk="",
         # copyfile(os.path.join('utils/', 'run.pl'), 'run.pl')
         with _remove_compression('steps/make_mfcc.sh'):
             subprocess.call('steps/make_mfcc.sh ' +
-                            '--nj %d ' % (get_cpu_count() * 3) +
+                            '--nj %d ' % (cpu_count() * 3) +
                             '--cmd utils/run.pl ' +
                             '--mfcc-config %s ' % config_path +
                             ' data data ' + outpath, shell=True)
@@ -453,7 +454,7 @@ remove_dc_offset=True, min_duration=0, snip_edges=True, subtract_mean=False,
         copyfile(os.path.join('utils/', 'parse_options.sh'), 'parse_options.sh')
         with _remove_compression('steps/make_fbank.sh'):
             subprocess.call('steps/make_fbank.sh ' +
-                            '--nj %d ' % 1 +
+                            '--nj %d ' % (cpu_count() * 3) +
                             '--cmd utils/run.pl ' +
                             '--fbank-config %s ' % config_path +
                             ' data data ' + outpath, shell=True)

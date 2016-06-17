@@ -6,6 +6,7 @@ import timeit
 import subprocess
 import tempfile
 import contextlib
+from multiprocessing import cpu_count
 from collections import OrderedDict, deque
 
 import shutil
@@ -1014,31 +1015,47 @@ def is_path(path):
     return False
 
 
+def ordered_set(seq):
+    seen = {}
+    result = []
+    for marker in seq:
+        if marker in seen: continue
+        seen[marker] = 1
+        result.append(marker)
+    return result
+
+
+def segment_list(l, size=None, n_seg=None):
+    '''
+    Example
+    -------
+    >>> segment_list([1,2,3,4,5],2)
+    >>> [[1, 2, 3], [4, 5]]
+    >>> segment_list([1,2,3,4,5],4)
+    >>> [[1], [2], [3], [4, 5]]
+    '''
+    # by floor, make sure and process has it own job
+    if size is None:
+        size = int(numpy.ceil(len(l) / float(n_seg)))
+    else:
+        n_seg = int(numpy.ceil(len(l) / float(size)))
+    if size * n_seg - len(l) > size:
+        size = int(numpy.floor(len(l) / float(n_seg)))
+    # start segmenting
+    segments = []
+    for i in range(n_seg):
+        start = i * size
+        if i < n_seg - 1:
+            end = start + size
+        else:
+            end = max(start + size, len(l))
+        segments.append(l[start:end])
+    return segments
+
+
 # ===========================================================================
 # Misc
 # ===========================================================================
-def get_cpu_count():
-    ''' Returns the number of CPUs in the system
-    '''
-    num = 1
-    if sys.platform == 'win32':
-        try:
-            num = int(os.environ['NUMBER_OF_PROCESSORS'])
-        except:
-            pass
-    elif sys.platform == 'darwin':
-        try:
-            num = int(os.popen('sysctl -n hw.ncpu').read())
-        except:
-            pass
-    else:
-        try:
-            num = os.sysconf('SC_NPROCESSORS_ONLN')
-        except:
-            pass
-    return num
-
-
 @contextlib.contextmanager
 def UnitTimer(factor=1):
     start = timeit.default_timer()
@@ -1079,7 +1096,7 @@ def exec_commands(cmds):
     def success(p):
         return p.returncode == 0
 
-    max_task = get_cpu_count()
+    max_task = cpu_count()
     processes = []
     processes_map = {}
     failed = []
